@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OutboundAI — Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    /* Dark theme CSS variables */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
+
+    :root {
+      --bg: #0d0d0d;
+      --card: #161616;
+      --border: #252525;
+      --accent: #00ff88;
+      --accent2: #00ccff;
+      --danger: #ff4d4d;
+      --warn: #ffaa00;
+      --muted: #5a5a5a;
+      --text: #e0e0e0;
+      --text2: #aaa;
+      --mono: 'Courier New', monospace;
+      --sans: 'Segoe UI', system-ui, sans-serif;
+      --r: 8px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      line-height: 1.5;
+      font-size: 14px
+    }
+
+    a {
+      color: var(--accent2);
+      text-decoration: none;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin-bottom: 15px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    button {
+      background: var(--card);
+      color: #fff;
+      border: 1px solid var(--border);
+      padding: 8px 16px;
+      border-radius: var(--r);
+      cursor: pointer;
+      transition: 0.2s;
+      font-family: var(--sans);
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      font-weight: bold;
+    }
+
+    button.primary:hover {
+      background: #00cc6a;
+    }
+
+    button.danger {
+      background: var(--danger);
+      color: #fff;
+      border: none;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: #fff;
+      border-radius: var(--r);
+      font-family: var(--sans);
+      margin-bottom: 15px;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 100px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      color: var(--text2);
+      font-weight: 500;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .badge {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+
+    .badge.ok,
+    .badge.booked,
+    .badge.active,
+    .badge.available {
+      background: rgba(0, 255, 136, 0.1);
+      color: var(--accent);
+    }
+
+    .badge.warn,
+    .badge.paused,
+    .badge.voicemail,
+    .badge.no_answer {
+      background: rgba(255, 170, 0, 0.1);
+      color: var(--warn);
+    }
+
+    .badge.err,
+    .badge.not_interested,
+    .badge.wrong_number,
+    .badge.cancelled {
+      background: rgba(255, 77, 77, 0.1);
+      color: var(--danger);
+    }
+
+    .badge.completed {
+      background: rgba(0, 204, 255, 0.1);
+      color: var(--accent2);
+    }
+
+    /* Layout */
+    .sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 220px;
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      padding: 20px 0;
+      overflow-y: auto;
+    }
+
+    .logo {
+      font-size: 20px;
+      font-weight: bold;
+      padding: 0 20px 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 10px;
+      color: #fff;
+    }
+
+    .nav-item {
+      display: block;
+      padding: 12px 20px;
+      color: var(--text2);
+      cursor: pointer;
+      transition: 0.2s;
+      border-left: 3px solid transparent;
+    }
+
+    .nav-item:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .nav-item.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      background: rgba(0, 255, 136, 0.05);
+    }
+
+    .main {
+      margin-left: 220px;
+      padding: 30px;
+      max-width: 1200px;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+      animation: fadeIn 0.3s;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(5px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 20px;
+      border-radius: var(--r);
+      margin-bottom: 20px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+    }
+
+    /* Stats specific */
+    .stat-box {
+      background: var(--bg);
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      text-align: center;
+    }
+
+    .stat-num {
+      font-size: 32px;
+      font-weight: bold;
+      color: var(--accent);
+      margin-bottom: 5px;
+      line-height: 1;
+    }
+
+    .stat-label {
+      color: var(--text2);
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+
+    .chart-container {
+      position: relative;
+      height: 300px;
+      width: 100%;
+      margin-top: 20px;
+    }
+
+    /* Misc */
+    .hidden {
+      display: none !important;
+    }
+
+    .flex-between {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      padding: 12px 20px;
+      background: var(--card);
+      border: 1px solid var(--accent);
+      color: #fff;
+      border-radius: var(--r);
+      transform: translateY(100px);
+      opacity: 0;
+      transition: 0.3s;
+      z-index: 9999;
+    }
+
+    #toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    #toast.err {
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+
+    .live-config-chip {
+      display: inline-block;
+      padding: 4px 10px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 20px;
+      font-size: 12px;
+      margin-right: 10px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+    }
+
+    .live-config-chip span {
+      color: var(--accent2);
+      font-weight: bold;
+      margin-left: 5px;
+    }
+
+    /* Logs specific */
+    .log-row {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .log-time {
+      color: var(--text2);
+      margin-right: 15px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="sidebar">
+    <div class="logo">OutboundAI</div>
+    <div class="nav-item active" onclick="switchTab('stats')">📊 Stats</div>
+    <div class="nav-item" onclick="switchTab('call')">📞 Single Call</div>
+    <div class="nav-item" onclick="switchTab('batch')">📋 Batch Call</div>
+    <div class="nav-item" onclick="switchTab('campaigns')">🚀 Campaigns</div>
+    <div class="nav-item" onclick="switchTab('agents')">🤖 Agents</div>
+    <div class="nav-item" onclick="switchTab('prompt')">✏️ AI Prompt</div>
+    <div class="nav-item" onclick="switchTab('appointments')">📅 Appointments</div>
+    <div class="nav-item" onclick="switchTab('logs')">📝 Call Logs</div>
+    <div class="nav-item" onclick="switchTab('crm')">👥 CRM</div>
+    <div class="nav-item" onclick="switchTab('settings')">⚙️ Settings</div>
+    <div class="nav-item" onclick="switchTab('syslogs')">📋 Logs</div>
+    <div class="nav-item" onclick="switchTab('setup')">🔧 Setup</div>
+  </div>
+
+  <div class="main">
+
+    <!-- STATS TAB -->
+    <div id="tab-stats" class="tab-content active">
+      <h2>Dashboard Overview</h2>
+
+      <div class="card">
+        <h3>Active Configuration</h3>
+        <div id="live-config-chips"></div>
+      </div>
+
+      <div class="grid-4" style="margin-bottom: 20px;">
+        <div class="stat-box">
+          <div class="stat-num" id="s-calls">0</div>
+          <div class="stat-label">Total Calls</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num" id="s-booked">0</div>
+          <div class="stat-label">Booked</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num" id="s-rate">0%</div>
+          <div class="stat-label">Conversion</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num" id="s-dur">0s</div>
+          <div class="stat-label">Avg Duration</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>Call Timeline (14 Days)</h3>
+          <div class="chart-container"><canvas id="chart-timeline"></canvas></div>
+        </div>
+        <div class="card">
+          <h3>Outcomes Breakdown</h3>
+          <div class="chart-container"><canvas id="chart-outcomes"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SINGLE CALL TAB -->
+    <div id="tab-call" class="tab-content">
+      <h2>Make Outbound Call</h2>
+      <div class="card" style="max-width: 500px;">
+        <form id="frm-call" onsubmit="event.preventDefault(); submitCall();">
+          <label>Phone Number (E.164)</label>
+          <input type="text" id="c-phone" placeholder="+919876543210" required />
+
+          <label>Lead Name</label>
+          <input type="text" id="c-lead" placeholder="John Doe" required />
+
+          <label>Business Name</label>
+          <input type="text" id="c-biz" placeholder="Apex Dental" required />
+
+          <label>Service Type</label>
+          <input type="text" id="c-service" placeholder="Teeth Cleaning" required />
+
+          <label>Agent Profile <i>(optional override)</i></label>
+          <select id="c-profile">
+            <option value="">-- Use Default Settings --</option>
+          </select>
+
+          <label><input type="checkbox" id="c-custom-toggle"
+              onchange="$('c-custom-box').style.display=this.checked?'block':'none'"> Override System Prompt for this
+            call?</label>
+          <div id="c-custom-box" style="display:none; margin-top:10px;">
+            <textarea id="c-prompt" placeholder="Custom prompt... (leave empty to use default)"></textarea>
+          </div>
+
+          <button type="submit" class="primary" style="margin-top: 15px; width:100%">Dial Now</button>
+        </form>
+      </div>
+      <div id="c-result" style="margin-top:15px;" class="hidden badge"></div>
+    </div>
+
+    <!-- BATCH CALL TAB -->
+    <div id="tab-batch" class="tab-content">
+      <h2>Batch Disptach</h2>
+      <p>Upload a CSV file. Columns must include: <b>phone, lead_name, business_name, service_type</b></p>
+      <div class="card" style="max-width: 600px;">
+        <label>Select CSV</label>
+        <input type="file" id="bc-file" accept=".csv" />
+        <label>Call Delay (seconds between dials)</label>
+        <input type="number" id="bc-delay" value="3" min="1" />
+        <label>Agent Profile</label>
+        <select id="bc-profile">
+          <option value="">-- Use Default Settings --</option>
+        </select>
+        <div class="flex-between">
+          <button type="button" onclick="parseBatchCSV()">Preview</button>
+          <button type="button" class="primary" id="bc-start" disabled onclick="startBatch()">Start Batch</button>
+        </div>
+      </div>
+      <div id="bc-preview" class="hidden card">
+        <h4>Preview: <span id="bc-count">0</span> contacts</h4>
+        <div
+          style="max-height: 200px; overflow-y:auto; font-family:var(--mono); font-size:12px; margin-bottom:15px; background:var(--bg); border:1px solid var(--border); padding:10px;"
+          id="bc-data"></div>
+      </div>
+      <div id="bc-progress" class="hidden card">
+        <h4>Progress: <span id="bc-done">0</span> / <span id="bc-total">0</span></h4>
+      </div>
+    </div>
+
+    <!-- CAMPAIGNS TAB -->
+    <div id="tab-campaigns" class="tab-content">
+      <div class="flex-between">
+        <h2>Campaigns</h2>
+        <button class="primary" onclick="$('camp-form-wrapper').classList.toggle('hidden')">+ New Campaign</button>
+      </div>
+
+      <div id="camp-form-wrapper" class="card hidden">
+        <h3>Create Campaign</h3>
+        <form onsubmit="event.preventDefault(); createCampaign();">
+          <div class="grid-2">
+            <div><label>Campaign Name</label><input type="text" id="camp-name" required /></div>
+            <div><label>Agent Profile</label><select id="camp-profile">
+                <option value="">-- Default --</option>
+              </select></div>
+            <div><label>Schedule Type</label><select id="camp-type">
+                <option value="once">Run Once (Now)</option>
+                <option value="daily">Daily</option>
+                <option value="weekdays">Weekdays (Mon-Fri)</option>
+              </select></div>
+            <div><label>Time (HH:MM)</label><input type="time" id="camp-time" value="09:00" /></div>
+            <div><label>Delay between calls (s)</label><input type="number" id="camp-delay" value="3" /></div>
+            <div><label>Upload Contacts CSV</label><input type="file" id="camp-file" accept=".csv" required /></div>
+          </div>
+          <button type="submit" class="primary">Save Campaign</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <table id="tbl-campaigns">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Schedule</th>
+              <th>Progress (OK/Fail)</th>
+              <th>Last Run</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- AGENT PROFILES TAB -->
+    <div id="tab-agents" class="tab-content">
+      <div class="flex-between">
+        <h2>Agent Profiles</h2>
+        <button class="primary" onclick="resetAgentForm(); $('agent-form-wrapper').classList.remove('hidden')">+ New
+          Profile</button>
+      </div>
+
+      <div id="agent-form-wrapper" class="card hidden" style="max-width:700px;">
+        <h3 id="agent-f-title">Create Profile</h3>
+        <form onsubmit="event.preventDefault(); saveAgentProfile();">
+          <input type="hidden" id="ap-id" />
+          <div class="grid-2">
+            <div><label>Profile Name</label><input type="text" id="ap-name" required /></div>
+            <div><label>Voice</label><select id="ap-voice">
+                <optgroup label="Female voices">
+                  <option value="Aoede" selected>Aoede — warm, expressive</option>
+                  <option value="Achernar">Achernar — soft & clear</option>
+                  <option value="Autonoe">Autonoe</option>
+                  <option value="Callirrhoe">Callirrhoe</option>
+                  <option value="Despina">Despina</option>
+                  <option value="Erinome">Erinome</option>
+                  <option value="Gacrux">Gacrux</option>
+                  <option value="Kore">Kore</option>
+                  <option value="Laomedeia">Laomedeia</option>
+                  <option value="Leda">Leda</option>
+                  <option value="Pulcherrima">Pulcherrima</option>
+                  <option value="Sulafat">Sulafat</option>
+                  <option value="Vindemiatrix">Vindemiatrix</option>
+                  <option value="Zephyr">Zephyr</option>
+                </optgroup>
+                <optgroup label="Male voices">
+                  <option value="Achird">Achird</option>
+                  <option value="Algenib">Algenib</option>
+                  <option value="Algieba">Algieba</option>
+                  <option value="Alnilam">Alnilam</option>
+                  <option value="Charon">Charon</option>
+                  <option value="Enceladus">Enceladus</option>
+                  <option value="Fenrir">Fenrir</option>
+                  <option value="Iapetus">Iapetus</option>
+                  <option value="Orus">Orus</option>
+                  <option value="Perseus">Perseus</option>
+                  <option value="Puck">Puck</option>
+                  <option value="Rasalgethi">Rasalgethi</option>
+                  <option value="Sadachbia">Sadachbia</option>
+                  <option value="Sadaltager">Sadaltager</option>
+                  <option value="Schedar">Schedar</option>
+                  <option value="Umbriel">Umbriel</option>
+                  <option value="Zubenelgenubi">Zubenelgenubi</option>
+                </optgroup>
+              </select></div>
+          </div>
+          <label>Model</label>
+          <select id="ap-model">
+            <option value="gemini-3.1-flash-live-preview" selected>gemini-3.1-flash-live-preview (Realtime)</option>
+            <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio (Beta)</option>
+          </select>
+          <label>System Prompt (Overrides global)</label>
+          <textarea id="ap-prompt"></textarea>
+          <label>Enabled Tools (JSON array of strings e.g. ["check_availability"])</label>
+          <input type="text" id="ap-tools" value="[]" />
+          <label style="margin-bottom:15px; display:block;"><input type="checkbox" id="ap-default" /> Make
+            Default</label>
+          <div><button type="submit" class="primary">Save</button> <button type="button"
+              onclick="$('agent-form-wrapper').classList.add('hidden')">Cancel</button></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <table id="tbl-agents">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Voice</th>
+              <th>Model</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- AI PROMPT TAB -->
+    <div id="tab-prompt" class="tab-content">
+      <h2>Global AI System Prompt</h2>
+      <p>This is the default instruction set given to the AI across all calls unless overridden by a campaign or agent
+        profile.</p>
+      <div class="card">
+        <div class="flex-between" style="margin-bottom:10px;">
+          <span id="prompt-status" class="badge"></span>
+          <button type="button" class="danger" onclick="resetPrompt()">Reset to Default</button>
+        </div>
+        <textarea id="global-prompt" style="height:500px; font-family:var(--mono); font-size:13px;"></textarea>
+        <button type="button" class="primary" onclick="savePrompt()">Save Global Prompt</button>
+      </div>
+    </div>
+
+    <!-- APPOINTMENTS TAB -->
+    <div id="tab-appointments" class="tab-content">
+      <h2>Appointments</h2>
+      <div class="card">
+        <input type="date" id="apt-date" onchange="loadAppointments()" style="max-width:200px;" />
+        <button onclick="$('apt-date').value=''; loadAppointments()">Clear Filter</button>
+        <table id="tbl-apt" style="margin-top:15px;">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Service</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- CALL LOGS TAB -->
+    <div id="tab-logs" class="tab-content">
+      <div class="flex-between">
+        <h2>Call Logs</h2>
+        <div>
+          <button onclick="logPage(Math.max(1, _logPage-1))">&lt; Prev</button>
+          <span id="log-page-ind" style="margin:0 10px;">Page 1</span>
+          <button onclick="logPage(_logPage+1)">Next &gt;</button>
+        </div>
+      </div>
+      <div class="card" style="padding:0; overflow-x:auto;">
+        <table id="tbl-calls" style="margin:0;">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Phone / Lead</th>
+              <th>Outcome</th>
+              <th>Duration</th>
+              <th>Recording</th>
+              <th>Notes / Result</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- CRM TAB -->
+    <div id="tab-crm" class="tab-content">
+      <div class="grid-2">
+        <div class="card" style="overflow-y:auto; max-height:800px; padding:0;">
+          <table id="tbl-crm" style="margin:0;">
+            <thead>
+              <tr>
+                <th>Contact</th>
+                <th>Calls</th>
+                <th>Booked</th>
+                <th>Last Call</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card" id="crm-detail" style="display:none; max-height:800px; overflow-y:auto;">
+          <h3 id="crm-name">...</h3>
+          <p class="badge ok" id="crm-phone" style="display:inline-block; margin-bottom:15px;"></p>
+          <h4>Call History</h4>
+          <div id="crm-history" style="margin-bottom:20px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS TAB -->
+    <div id="tab-settings" class="tab-content">
+      <h2>System Settings</h2>
+
+      <form onsubmit="event.preventDefault(); saveGroup('livekit');">
+        <div class="card">
+          <h3>LiveKit Connection</h3>
+          <label>URL (wss://...)</label><input type="text" id="set_LIVEKIT_URL" />
+          <label>API Key</label><input type="password" id="set_LIVEKIT_API_KEY"
+            placeholder="Leave empty to keep existing securely" />
+          <label>API Secret</label><input type="password" id="set_LIVEKIT_API_SECRET"
+            placeholder="Leave empty to keep existing securely" />
+          <button type="submit">Save LiveKit Keys</button>
+        </div>
+      </form>
+
+      <form onsubmit="event.preventDefault(); saveGroup('gemini');">
+        <div class="card">
+          <h3>Google Gemini</h3>
+          <label>API Key</label><input type="password" id="set_GOOGLE_API_KEY"
+            placeholder="Leave empty to keep existing securely" />
+          <button type="submit">Save Gemini Keys</button>
+        </div>
+      </form>
+
+      <form onsubmit="event.preventDefault(); saveGroup('vobiz');">
+        <div class="card">
+          <div class="flex-between">
+            <h3>Vobiz SIP Telephony</h3>
+            <button type="button" class="primary" onclick="createSIPTrunk()">⚡ Auto-Create SIP Trunk in LiveKit</button>
+          </div>
+          <div class="grid-2">
+            <div><label>SIP Domain</label><input type="text" id="set_VOBIZ_SIP_DOMAIN" /></div>
+            <div><label>Username</label><input type="text" id="set_VOBIZ_USERNAME" /></div>
+            <div><label>Password</label><input type="password" id="set_VOBIZ_PASSWORD" placeholder="..." /></div>
+            <div><label>Outbound Number</label><input type="text" id="set_VOBIZ_OUTBOUND_NUMBER" /></div>
+            <div><label>Transfer Number (Fallback)</label><input type="text" id="set_DEFAULT_TRANSFER_NUMBER" /></div>
+            <div><label>LiveKit Trunk ID (Auto-populated)</label><input type="text" id="set_OUTBOUND_TRUNK_ID" readonly
+                style="opacity:0.6" /></div>
+          </div>
+          <button type="submit">Save Telephony Settings</button>
+        </div>
+      </form>
+
+      <div class="grid-2">
+        <form onsubmit="event.preventDefault(); saveGroup('calcom');">
+          <div class="card">
+            <h3>Cal.com Sync</h3>
+            <label>API Key</label><input type="password" id="set_CALCOM_API_KEY" placeholder="..." />
+            <label>Event Type ID (integer)</label><input type="text" id="set_CALCOM_EVENT_TYPE_ID" />
+            <label>Timezone</label><input type="text" id="set_CALCOM_TIMEZONE" value="Asia/Kolkata" />
+            <button type="submit">Save Cal.com</button>
+          </div>
+        </form>
+        <form onsubmit="event.preventDefault(); saveGroup('twilio');">
+          <div class="card">
+            <h3>Twilio SMS</h3>
+            <label>Account SID</label><input type="text" id="set_TWILIO_ACCOUNT_SID" />
+            <label>Auth Token</label><input type="password" id="set_TWILIO_AUTH_TOKEN" placeholder="..." />
+            <label>From Number</label><input type="text" id="set_TWILIO_FROM_NUMBER" />
+            <button type="submit">Save Twilio</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- SYSTEM LOGS TAB -->
+    <div id="tab-syslogs" class="tab-content">
+      <div class="flex-between" style="margin-bottom:15px;">
+        <h2>System Event Logs</h2>
+        <div>
+          <select id="log-filter" onchange="loadSyslogs()" style="width:auto; margin:0 10px 0 0;">
+            <option value="">All Levels</option>
+            <option value="error">Error</option>
+            <option value="warning">Warning</option>
+            <option value="info">Info</option>
+          </select>
+          <button onclick="loadSyslogs()">Refresh Now</button>
+          <button onclick="apiDel('/api/logs').then(()=>loadSyslogs())" class="danger">Clear Logs</button>
+        </div>
+      </div>
+      <div class="card" id="syslog-box" style="height:600px; overflow-y:auto; background:var(--bg);"></div>
+    </div>
+
+    <!-- SETUP/DOCS TAB -->
+    <div id="tab-setup" class="tab-content">
+      <h2>Quick Setup Guide</h2>
+      <div class="card">
+        <ol style="margin-left:20px; line-height:2;">
+          <li>Go to <b>Settings</b> and enter your API keys for LiveKit, Gemini, and Vobiz.</li>
+          <li>Click <b>Save</b> on each section.</li>
+          <li>Click <b>⚡ Auto-Create SIP Trunk</b> in the Vobiz section (checks keys and links Vobiz to LiveKit).</li>
+          <li>Check <b>Global AI Prompt</b> — customize the instructions to fit your business name and service.</li>
+          <li>(Optional) In <b>Agents</b>, create a profile choosing a preferred Voice (Aoede is recommended) and make
+            it the default.</li>
+          <li>Run a test call via <b>Single Call</b> to your own personal phone number to ensure audio flows and SIP
+            routes correctly (expect up to ~20 seconds of ringing).</li>
+        </ol>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="toast"></div>
+
+  <!-- ================= JAVASCRIPT LOGIC ================= -->
+  <script>
+    const $ = id => document.getElementById(id);
+    const _handle = async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.detail || d.message || "Request Failed"); return d; };
+    const api = (p, o = {}) => fetch(p, o).then(_handle);
+    const apiPost = (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(_handle);
+    const apiPatch = (p, b) => fetch(p, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(_handle);
+    const apiDel = p => fetch(p, { method: 'DELETE' }).then(_handle);
+
+    function toast(msg, isErr = false) {
+      const t = $('toast');
+      t.textContent = msg;
+      t.className = isErr ? 'show err' : 'show';
+      setTimeout(() => t.className = '', 3000);
+    }
+
+    function switchTab(name) {
+      document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+      event.currentTarget.classList.add('active');
+      $(`tab-${name}`).classList.add('active');
+      if (name === 'stats') loadStats();
+      if (name === 'logs') loadCalls();
+      if (name === 'settings') loadSettings();
+      if (name === 'prompt') loadPrompt();
+      if (name === 'agents') loadAgentProfiles();
+      if (name === 'campaigns') loadCampaigns();
+      if (name === 'crm') loadCRM();
+      if (name === 'appointments') loadAppointments();
+      if (name === 'syslogs') loadSyslogs();
+    }
+
+    const formatDt = (iso) => iso ? new Date(iso).toLocaleString() : '';
+
+    // -- Stats
+    let _cTimeline, _cOutcomes;
+    async function loadStats() {
+      try {
+        const d = await api('/api/stats');
+        $('s-calls').textContent = d.total_calls;
+        $('s-booked').textContent = d.booked;
+        $('s-rate').textContent = d.booking_rate_percent + '%';
+        $('s-dur').textContent = d.avg_duration_seconds + 's';
+        renderCharts(d);
+        loadLiveConfig();
+      } catch (e) { }
+    }
+    async function loadLiveConfig() {
+      const s = await api('/api/settings');
+      const h = [];
+      h.push(`<div class="live-config-chip">Model: <span>${s.GEMINI_MODEL?.value || 'default'}</span></div>`);
+      h.push(`<div class="live-config-chip">Voice: <span>${s.GEMINI_TTS_VOICE?.value || 'Aoede'}</span></div>`);
+      const pt = await api('/api/prompt');
+      h.push(`<div class="live-config-chip">Prompt: <span class="${pt.is_custom ? '' : 'text2'}">${pt.is_custom ? 'Custom' : 'Default'}</span></div>`);
+      $('live-config-chips').innerHTML = h.join('');
+    }
+    function renderCharts(d) {
+      if (!d.timeline) return;
+      const tCtx = $('chart-timeline');
+      if (_cTimeline) _cTimeline.destroy();
+      _cTimeline = new Chart(tCtx, {
+        type: 'line',
+        data: { labels: d.timeline.map(x => x.date), datasets: [{ label: 'Calls', data: d.timeline.map(x => x.count), borderColor: '#00ff88', tension: 0.3, backgroundColor: 'rgba(0,255,136,0.1)', fill: true }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+      });
+
+      const oCtx = $('chart-outcomes');
+      if (_cOutcomes) _cOutcomes.destroy();
+      const ol = Object.keys(d.outcomes);
+      const colors = { 'booked': '#00ff88', 'not_interested': '#ff4d4d', 'voicemail': '#ffaa00' };
+      _cOutcomes = new Chart(oCtx, {
+        type: 'doughnut',
+        data: { labels: ol, datasets: [{ data: Object.values(d.outcomes), backgroundColor: ol.map(x => colors[x] || '#5a5a5a'), borderWidth: 1, borderColor: '#161616' }] },
+        options: { responsive: true, maintainAspectRatio: false, cutout: '70%', plugins: { legend: { position: 'right', labels: { color: '#e0e0e0' } } } }
+      });
+    }
+
+    // -- Single Call
+    async function submitCall() {
+      const p = {
+        phone: $('c-phone').value, lead_name: $('c-lead').value, business_name: $('c-biz').value, service_type: $('c-service').value,
+        agent_profile_id: $('c-profile').value || null
+      };
+      if ($('c-custom-toggle').checked && $('c-prompt').value.trim()) p.system_prompt = $('c-prompt').value;
+      try {
+        const r = await apiPost('/api/call', p);
+        toast('Call dispatched!');
+        $('c-result').textContent = `Dispatched. Room: ${r.room}`;
+        $('c-result').className = `badge ok`;
+        $('c-result').classList.remove('hidden');
+      } catch (e) {
+        toast(e.message || 'Error dispatching call', true);
+        $('c-result').textContent = `Error: ${e.message}`;
+        $('c-result').className = `badge err`;
+        $('c-result').classList.remove('hidden');
+      }
+    }
+
+    // -- Batch Call
+    let _batchData = [];
+    function parseBatchCSV() {
+      const f = $('bc-file').files[0];
+      if (!f) return toast('Select a CSV file', true);
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result;
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+        if (lines.length < 2) return toast('Empty or invalid CSV', true);
+        const headers = lines[0].toLowerCase().split(',');
+        _batchData = lines.slice(1).map(l => {
+          const vals = l.split(',');
+          return headers.reduce((acc, h, i) => { acc[h.trim()] = vals[i] ? vals[i].trim() : ''; return acc; }, {});
+        }).filter(d => Boolean(d.phone));
+        $('bc-count').textContent = _batchData.length;
+        $('bc-data').textContent = JSON.stringify(_batchData.slice(0, 3), null, 2) + (_batchData.length > 3 ? '\n...' : '');
+        $('bc-preview').classList.remove('hidden');
+        $('bc-start').disabled = _batchData.length === 0;
+      };
+      reader.readAsText(f);
+    }
+    async function startBatch() {
+      if (!_batchData.length) return;
+      $('bc-start').disabled = true;
+      $('bc-progress').classList.remove('hidden');
+      $('bc-total').textContent = _batchData.length;
+      let done = 0;
+      const delay = parseInt($('bc-delay').value || 3) * 1000;
+      const pid = $('bc-profile').value || null;
+
+      for (const c of _batchData) {
+        try {
+          await apiPost('/api/call', { phone: c.phone, lead_name: c.lead_name || 'there', business_name: c.business_name || 'our company', service_type: c.service_type || 'our service', agent_profile_id: pid });
+        } catch (e) { }
+        done++;
+        $('bc-done').textContent = done;
+        if (done < _batchData.length) await new Promise(r => setTimeout(r, delay));
+      }
+      toast(`Batch completed! ${done} dispatched.`);
+    }
+
+    // -- Campaigns
+    async function loadCampaigns() {
+      try {
+        const d = await api('/api/campaigns');
+        const tb = $('tbl-campaigns').querySelector('tbody');
+        tb.innerHTML = '';
+        d.forEach(c => {
+          const isAct = c.status === 'active';
+          tb.innerHTML += `<tr>
+        <td><strong>${c.name}</strong><br><small class="text2">Agent: ${c.agent_profile_id ? 'Custom' : 'Default'}</small></td>
+        <td><span class="badge ${c.status}">${c.status}</span></td>
+        <td>${c.schedule_type} @ ${c.schedule_time}</td>
+        <td>${c.total_dispatched} ok / ${c.total_failed} err</td>
+        <td><small class="text2">${formatDt(c.last_run_at) || 'Never'}</small></td>
+        <td>
+          <button onclick="runCampaign('${c.id}')" title="Run Now">▶</button>
+          <button onclick="toggleCampaignStatus('${c.id}','${isAct ? 'paused' : 'active'}')">${isAct ? '⏸ Pause' : '▶ Resume'}</button>
+          <button class="danger" onclick="deleteCampaign('${c.id}')">🗑</button>
+        </td>
+      </tr>`;
+        });
+      } catch (e) { }
+    }
+    function createCampaign() {
+      const f = $('camp-file').files[0];
+      if (!f) return toast('Need contacts CSV', true);
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const lines = e.target.result.split('\n').map(l => l.trim()).filter(l => l);
+        if (lines.length < 2) return toast('Invalid CSV', true);
+        const head = lines[0].toLowerCase().split(',');
+        const contacts = lines.slice(1).map(l => {
+          const v = l.split(',');
+          return head.reduce((acc, h, i) => { acc[h.trim()] = v[i] ? v[i].trim() : ''; return acc; }, {});
+        }).filter(x => x.phone);
+        if (!contacts.length) return toast('No valid phones', true);
+
+        const p = {
+          name: $('camp-name').value, schedule_type: $('camp-type').value, schedule_time: $('camp-time').value,
+          call_delay_seconds: parseInt($('camp-delay').value || 3), agent_profile_id: $('camp-profile').value || null, contacts: contacts
+        };
+        try {
+          await apiPost('/api/campaigns', p);
+          toast('Campaign saved');
+          $('camp-form-wrapper').classList.add('hidden');
+          loadCampaigns();
+        } catch (err) { toast('Error saving campaign', true); }
+      };
+      reader.readAsText(f);
+    }
+    window.runCampaign = async (id) => { await apiPost(`/api/campaigns/${id}/run`, {}); toast('Dispatching...'); loadCampaigns(); }
+    window.toggleCampaignStatus = async (id, st) => { await apiPatch(`/api/campaigns/${id}/status`, { status: st }); loadCampaigns(); }
+    window.deleteCampaign = async (id) => { if (confirm('Delete campaign?')) { await apiDel(`/api/campaigns/${id}`); loadCampaigns(); } }
+
+    // -- Agent Profiles
+    async function loadAgentProfiles() {
+      try {
+        const res = await api('/api/agent-profiles');
+        const data = Array.isArray(res) ? res : [];
+
+        const tb = $('tbl-agents').querySelector('tbody');
+        tb.innerHTML = '';
+
+        let optHtml = '<option value="">-- Use Default Settings --</option>';
+        data.forEach(p => {
+          optHtml += `<option value="${p.id}">${p.name} ${p.is_default ? '(Default)' : ''}</option>`;
+          tb.innerHTML += `<tr>
+        <td><strong>${p.name}</strong></td>
+        <td>${p.voice}</td>
+        <td><small class="text2">${p.model}</small></td>
+        <td>${p.is_default ? '<span class="badge ok">Default</span>' : ''}</td>
+        <td>
+          <button onclick="editAgentProfile('${p.id}')">✏️ Edit</button>
+          ${!p.is_default ? `<button onclick="setDefaultAgentProfile('${p.id}')">★ Make Default</button>` : ''}
+          <button class="danger" onclick="deleteAgentProfile('${p.id}')">🗑</button>
+        </td>
+      </tr>`;
+        });
+        $('c-profile').innerHTML = optHtml;
+        $('bc-profile').innerHTML = optHtml;
+        $('camp-profile').innerHTML = '<option value="">-- Use Default Settings --</option>' + optHtml;
+      } catch (e) { }
+    }
+    window.setDefaultAgentProfile = async (id) => { await apiPost(`/api/agent-profiles/${id}/set-default`, {}); loadAgentProfiles(); }
+    window.deleteAgentProfile = async (id) => { await apiDel(`/api/agent-profiles/${id}`); loadAgentProfiles(); }
+    window.resetAgentForm = () => {
+      $('ap-id').value = ''; $('ap-name').value = ''; $('ap-voice').value = 'Aoede'; $('ap-model').value = 'gemini-3.1-flash-live-preview';
+      $('ap-prompt').value = ''; $('ap-tools').value = '[]'; $('ap-default').checked = false;
+      $('agent-f-title').textContent = 'Create Profile';
+    }
+    window.editAgentProfile = async (id) => {
+      const p = await api(`/api/agent-profiles/${id}`);
+      $('ap-id').value = p.id; $('ap-name').value = p.name; $('ap-voice').value = p.voice; $('ap-model').value = p.model;
+      $('ap-prompt').value = p.system_prompt || ''; $('ap-tools').value = p.enabled_tools || '[]'; $('ap-default').checked = !!p.is_default;
+      $('agent-f-title').textContent = 'Edit Profile';
+      $('agent-form-wrapper').classList.remove('hidden');
+    }
+    window.saveAgentProfile = async () => {
+      const p = { name: $('ap-name').value, voice: $('ap-voice').value, model: $('ap-model').value, system_prompt: $('ap-prompt').value || null, enabled_tools: $('ap-tools').value, is_default: $('ap-default').checked };
+      const id = $('ap-id').value;
+      try {
+        if (id) await fetch(`/api/agent-profiles/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
+        else await apiPost('/api/agent-profiles', p);
+        toast('Profile saved');
+        $('agent-form-wrapper').classList.add('hidden');
+        loadAgentProfiles();
+      } catch (e) { toast('Error saving profile', true); }
+    }
+
+    // -- Prompt
+    async function loadPrompt() { const r = await api('/api/prompt'); $('global-prompt').value = r.prompt; $('prompt-status').textContent = r.is_custom ? 'Customized' : 'Default'; $('prompt-status').className = `badge ${r.is_custom ? 'warn' : 'ok'}`; }
+    async function savePrompt() { await apiPost('/api/prompt', { prompt: $('global-prompt').value }); toast('Global prompt saved'); loadPrompt(); }
+    async function resetPrompt() { if (confirm('Reset to system default?')) { await apiDel('/api/prompt'); toast('Prompt reset'); loadPrompt(); } }
+
+    // -- Appointments
+    async function loadAppointments() {
+      try {
+        const df = $('apt-date').value;
+        const res = await api('/api/appointments' + (df ? `?date=${df}` : ''));
+        const tb = $('tbl-apt').querySelector('tbody');
+        tb.innerHTML = '';
+        res.forEach(a => {
+          tb.innerHTML += `<tr><td>${a.date}</td><td>${a.time}</td><td>${a.name}</td><td>${a.phone}</td><td>${a.service}</td><td><span class="badge ${a.status}">${a.status}</span></td><td>${a.status !== 'cancelled' ? `<button class="danger" onclick="cancelAppointment('${a.id}')">Cancel</button>` : ''}</td></tr>`;
+        });
+      } catch (e) { }
+    }
+    window.cancelAppointment = async (id) => { if (confirm('Cancel appointment?')) { await apiDel(`/api/appointments/${id}`); loadAppointments(); } }
+
+    // -- Call Logs
+    let _logPage = 1;
+    window.logPage = (p) => { _logPage = p; $('log-page-ind').textContent = `Page ${_logPage}`; loadCalls(); };
+    async function loadCalls() {
+      try {
+        const res = await api(`/api/calls?page=${_logPage}&limit=20`);
+        const tb = $('tbl-calls').querySelector('tbody');
+        tb.innerHTML = '';
+        res.forEach(c => {
+          tb.innerHTML += `<tr>
+        <td style="font-size:12px; color:var(--text2);">${formatDt(c.timestamp)}</td>
+        <td><strong>${c.phone_number}</strong><br><small class="text2">${c.lead_name || '?'}</small></td>
+        <td><span class="badge ${c.outcome || 'unknown'}">${c.outcome || 'pending'}</span></td>
+        <td>${c.duration_seconds || 0}s</td>
+        <td>${c.recording_url ? `<a href="${c.recording_url}" target="_blank">Listen 🎧</a>` : '-'}</td>
+        <td>
+          <input type="text" id="n_${c.id}" value="${c.notes || c.reason || ''}" style="margin:0; padding:4px;" />
+          <button style="padding:4px 8px; margin-left:5px;" onclick="saveNotes('${c.id}')">💾</button>
+        </td>
+      </tr>`;
+        });
+      } catch (e) { }
+    }
+    window.saveNotes = async (id) => { await apiPatch(`/api/calls/${id}/notes`, { notes: $(`n_${id}`).value }); toast('Notes saved'); };
+
+    // -- CRM
+    async function loadCRM() {
+      try {
+        const res = await api('/api/crm');
+        const tb = $('tbl-crm').querySelector('tbody');
+        tb.innerHTML = '';
+        res.data.forEach(c => {
+          tb.innerHTML += `<tr style="cursor:pointer;" onclick="loadContactDetail('${c.phone_number}', '${c.lead_name || 'Unknown'}')">
+        <td><strong>${c.phone_number}</strong><br><small class="text2">${c.lead_name || '?'}</small></td>
+        <td>${c.total_calls}</td><td>${c.booked}</td>
+        <td><small class="text2">${c.last_outcome || '?'}<br>${formatDt(c.last_call)}</small></td>
+      </tr>`;
+        });
+      } catch (e) { }
+    }
+    window.loadContactDetail = async (phone, name) => {
+      $('crm-detail').style.display = 'block';
+      $('crm-name').textContent = name;
+      $('crm-phone').textContent = phone;
+      try {
+        const res = await api(`/api/crm/calls?phone=${encodeURIComponent(phone)}`);
+        const hist = $('crm-history');
+        hist.innerHTML = '';
+        res.data.forEach(c => {
+          hist.innerHTML += `<div style="border-left:2px solid var(--border); padding-left:15px; margin-bottom:15px;">
+        <div><small class="text2">${formatDt(c.timestamp)}</small></div>
+        <div><span class="badge ${c.outcome}">${c.outcome}</span> &middot; ${c.duration_seconds}s</div>
+        ${c.reason ? `<div style="margin-top:5px; font-style:italic; font-size:12px; color:var(--text2)">"${c.reason}"</div>` : ''}
+        ${c.notes ? `<div style="margin-top:5px; font-size:13px;">Notes: ${c.notes}</div>` : ''}
+        ${c.recording_url ? `<div style="margin-top:5px;"><a href="${c.recording_url}" target="_blank">Recording 🎧</a></div>` : ''}
+      </div>`;
+        });
+      } catch (e) { }
+    }
+
+    // -- Settings
+    async function loadSettings() {
+      try {
+        const s = await api('/api/settings');
+        for (const [k, obj] of Object.entries(s)) {
+          const el = $(`set_${k}`);
+          if (el) {
+            if (el.type !== 'password') el.value = obj.value || '';
+            if (obj.configured && el.type === 'password') el.placeholder = "(Configured securely. Enter new to override)";
+          }
+        }
+      } catch (e) { }
+    }
+    async function saveGroup(groupPrefix) {
+      const settings = {};
+      document.querySelectorAll(`input[id^="set_"]`).forEach(el => {
+        const k = el.id.replace('set_', '');
+        // crude matching grouping logic based on keys mapping
+        if ((groupPrefix === 'livekit' && k.startsWith('LIVEKIT')) ||
+          (groupPrefix === 'gemini' && k.startsWith('GOOGLE')) ||
+          (groupPrefix === 'vobiz' && (k.startsWith('VOBIZ') || k.startsWith('OUTBOUND') || k.startsWith('DEFAULT'))) ||
+          (groupPrefix === 'calcom' && k.startsWith('CALCOM')) ||
+          (groupPrefix === 'twilio' && k.startsWith('TWILIO'))) {
+          if (el.value) settings[k] = el.value;
+        }
+      });
+      if (Object.keys(settings).length) {
+        try {
+          await apiPost('/api/settings', { settings: settings });
+          toast(`Saved configuration.`);
+          loadSettings();
+        } catch (e) { toast('Save failed', true); }
+      } else { toast('Nothing to save.'); }
+    }
+    async function createSIPTrunk() {
+      try {
+        const r = await apiPost('/api/setup/trunk', {});
+        toast(`SIP Trunk created: ${r.trunk_id}`);
+        loadSettings();
+      } catch (e) { toast('Error creating SIP trunk (ensure settings are saved)', true); }
+    }
+
+    // -- Syslogs
+    async function loadSyslogs() {
+      try {
+        const lvl = $('log-filter').value;
+        const res = await api(`/api/logs?limit=100${lvl ? `&level=${lvl}` : ''}`);
+        const b = $('syslog-box');
+        b.innerHTML = '';
+        res.forEach(l => {
+          let clr = 'var(--text2)';
+          if (l.level === 'error') clr = 'var(--danger)';
+          if (l.level === 'warning') clr = 'var(--warn)';
+          b.innerHTML += `<div class="log-row">
+        <span class="log-time">[${formatDt(l.timestamp)}]</span>
+        <span style="color:${clr}; margin-right:15px; text-transform:uppercase; font-weight:bold;">${l.level}</span>
+        <span><b>${l.source}</b>: ${l.message}</span>
+        ${l.detail ? `<div style="margin-left:80px; color:var(--text2); margin-top:4px;">${l.detail}</div>` : ''}
+      </div>`;
+        });
+      } catch (e) { }
+    }
+    setInterval(() => { if ($('tab-syslogs').classList.contains('active')) loadSyslogs(); }, 10000);
+
+    window.addEventListener('DOMContentLoaded', () => {
+      loadStats();
+      loadAgentProfiles();
+      loadSettings();
+    });
+  </script>
+</body>
+
+</html>
