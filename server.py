@@ -146,6 +146,24 @@ async def api_dispatch_call(req: CallRequest):
     if not all([url, key, secret]):
         raise HTTPException(400, "LiveKit credentials not configured. Go to Settings → LiveKit.")
 
+    # Prevent concurrent active calls
+    try:
+        from livekit import api as lk_api
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx)) as session:
+            lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+            rooms_res = await lk.room.list_rooms(lk_api.ListRoomsRequest())
+            active_calls = [r for r in rooms_res.rooms if r.name.startswith("call-") or r.name.startswith("camp-")]
+            await lk.aclose()
+            if active_calls:
+                raise HTTPException(400, "A call is currently in progress. Please wait for the current call to finish.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Failed to check active rooms (proceeding anyway): %s", e)
+
     phone = req.phone.strip()
     if not phone.startswith("+"):
         raise HTTPException(400, "Phone must be in E.164 format: +919876543210")
