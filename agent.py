@@ -311,7 +311,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     file=api.EncodedFileOutput(
                         file_type=api.EncodedFileType.OGG, filepath=_recording_path,
                         s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
-                                        bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint),
+                                        bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint,
+                                        force_path_style=True),
                     ),
                 )
                 _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
