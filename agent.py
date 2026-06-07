@@ -298,11 +298,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     # ── Optional S3 recording (Asynchronous background task) ─────────────────
     async def start_recording_background():
-        _aws_key    = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
-        _aws_secret = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
-        _aws_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "")
-        _s3_endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")
-        _s3_region  = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
+        _aws_key    = (await get_setting("S3_ACCESS_KEY_ID")) or os.getenv("S3_ACCESS_KEY_ID", "")
+        _aws_secret = (await get_setting("S3_SECRET_ACCESS_KEY")) or os.getenv("S3_SECRET_ACCESS_KEY", "")
+        _aws_bucket = (await get_setting("S3_BUCKET")) or os.getenv("S3_BUCKET", "")
+        _s3_endpoint = (await get_setting("S3_ENDPOINT_URL")) or os.getenv("S3_ENDPOINT_URL", "")
+        _s3_region  = (await get_setting("S3_REGION")) or os.getenv("S3_REGION", "ap-northeast-1")
         if _aws_key and _aws_secret and _aws_bucket:
             try:
                 _recording_path = f"recordings/{ctx.room.name}.ogg"
