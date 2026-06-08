@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from collections import defaultdict
 
@@ -72,7 +72,7 @@ def sync_dotenv_to_db() -> None:
             "ENABLED_TOOLS",
         ]
         rows = []
-        updated_at = datetime.now().isoformat()
+        updated_at = datetime.now(timezone.utc).isoformat()
         for k in KNOWN_KEYS:
             val = os.getenv(k)
             if val is not None and val != "":
@@ -135,7 +135,7 @@ async def get_all_settings() -> dict:
 
 async def save_settings(data: dict) -> None:
     db = await _adb()
-    updated_at = datetime.now().isoformat()
+    updated_at = datetime.now(timezone.utc).isoformat()
     rows = [
         {"key": k, "value": str(v), "updated_at": updated_at}
         for k, v in data.items()
@@ -156,7 +156,7 @@ async def get_setting(key: str, default: str = "") -> str:
 async def set_setting(key: str, value: str) -> None:
     db = await _adb()
     await db.table("settings").upsert(
-        {"key": key, "value": value, "updated_at": datetime.now().isoformat()},
+        {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()},
         on_conflict="key",
     ).execute()
 
@@ -184,7 +184,7 @@ async def log_error(source: str, message: str, detail: str = "", level: str = "e
             "level": level,
             "message": message[:500],
             "detail": detail[:2000],
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }).execute()
     except Exception:
         pass
@@ -221,7 +221,7 @@ async def insert_appointment(name: str, phone: str, date: str, time: str, servic
     await db.table("appointments").insert({
         "id": full_id, "name": name, "phone": phone,
         "date": date, "time": time, "service": service,
-        "status": "booked", "created_at": datetime.now().isoformat(),
+        "status": "booked", "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
     return booking_id
 
@@ -241,7 +241,8 @@ async def get_next_available(date: str, time: str) -> str:
     try:
         dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
     except ValueError:
-        dt = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        ist_tz = timezone(timedelta(hours=5, minutes=30))
+        dt = datetime.now(ist_tz).replace(minute=0, second=0, microsecond=0, tzinfo=None) + timedelta(hours=1)
     for _ in range(7 * 24):
         dt += timedelta(hours=1)
         if 9 <= dt.hour < 18:
@@ -284,7 +285,7 @@ async def log_call(
     row: dict = {
         "id": str(uuid.uuid4()), "phone_number": phone_number, "lead_name": lead_name,
         "outcome": outcome, "reason": reason, "duration_seconds": duration_seconds,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     if recording_url:
         row["recording_url"] = recording_url
@@ -353,7 +354,7 @@ async def get_stats() -> dict:
         ts = (r.get("timestamp") or "")[:10]
         if ts:
             daily[ts] = daily.get(ts, 0) + 1
-    today = datetime.now().date()
+    today = datetime.now(timezone.utc).date()
     timeline = [{"date": (today - timedelta(days=i)).isoformat(), "count": daily.get((today - timedelta(days=i)).isoformat(), 0)} for i in range(13, -1, -1)]
     # Avg duration by outcome
     dur_sum: dict = {}
@@ -385,7 +386,7 @@ async def create_campaign(
         "id": campaign_id, "name": name, "status": "active",
         "contacts_json": contacts_json, "schedule_type": schedule_type,
         "schedule_time": schedule_time, "call_delay_seconds": call_delay_seconds,
-        "created_at": datetime.now().isoformat(), "total_dispatched": 0, "total_failed": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(), "total_dispatched": 0, "total_failed": 0,
     }
     if system_prompt:
         row["system_prompt"] = system_prompt
@@ -416,7 +417,7 @@ async def update_campaign_status(campaign_id: str, status: str) -> bool:
 async def update_campaign_run_stats(campaign_id: str, dispatched: int, failed: int) -> None:
     db = await _adb()
     await db.table("campaigns").update({
-        "last_run_at": datetime.now().isoformat(),
+        "last_run_at": datetime.now(timezone.utc).isoformat(),
         "total_dispatched": dispatched, "total_failed": failed, "status": "completed",
     }).eq("id", campaign_id).execute()
 
@@ -433,7 +434,7 @@ async def add_contact_memory(phone: str, insight: str) -> None:
     db = await _adb()
     await db.table("contact_memory").insert({
         "id": str(uuid.uuid4()), "phone_number": phone,
-        "insight": insight[:1000], "created_at": datetime.now().isoformat(),
+        "insight": insight[:1000], "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
 
 
@@ -451,7 +452,7 @@ async def compress_contact_memory(phone: str, compressed: str) -> None:
     await db.table("contact_memory").delete().eq("phone_number", phone).execute()
     await db.table("contact_memory").insert({
         "id": str(uuid.uuid4()), "phone_number": phone,
-        "insight": compressed[:2000], "created_at": datetime.now().isoformat(),
+        "insight": compressed[:2000], "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
 
 
@@ -480,7 +481,7 @@ async def create_agent_profile(
     await db.table("agent_profiles").insert({
         "id": profile_id, "name": name, "voice": voice, "model": model,
         "system_prompt": system_prompt, "enabled_tools": enabled_tools,
-        "is_default": 1 if is_default else 0, "created_at": datetime.now().isoformat(),
+        "is_default": 1 if is_default else 0, "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
     return profile_id
 

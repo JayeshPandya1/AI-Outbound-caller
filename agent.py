@@ -270,6 +270,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ctx.shutdown()
             return
         await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")
+        tool_ctx._call_start_time = time.time()
 
     # ── Build and start Gemini Live ──────────────────────────────────────────
     t_session_init = time.time()
@@ -395,7 +396,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         await session.aclose()
         if getattr(tool_ctx, "call_active", True):
             from db import log_call
-            duration = int(time.time() - call_start_time)
+            duration = int(time.time() - tool_ctx._call_start_time)
             await log_call(
                 phone_number, lead_name, "dropped", "Lead hung up before completion",
                 duration, getattr(tool_ctx, "recording_url", None)
