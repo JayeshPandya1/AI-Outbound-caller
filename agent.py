@@ -146,7 +146,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             _realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
                     end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
-                    silence_duration_ms=2000,
+                    silence_duration_ms=1000,
                     prefix_padding_ms=200,
                 ),
             )
@@ -280,6 +280,22 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     session = _build_session(tools=active_tools, system_prompt=system_prompt, gemini_model=gemini_model, gemini_voice=gemini_voice)
     await _log("info", f"[LATENCY AUDIT] Session object built in {time.time() - t_session_init:.2f}s")
 
+    @session.on("generation_created")
+    def _on_generation_created(event):
+        logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {time.time() - call_start_time:.2f}s")
+
+    @session.on("input_audio_transcription_completed")
+    def _on_input_audio_transcription_completed(event):
+        logger.info(f"[LATENCY AUDIT] User utterance transcription finished: '{event.transcript}' at {time.time() - call_start_time:.2f}s (is_final={event.is_final})")
+
+    @session.on("input_speech_started")
+    def _on_input_speech_started(event):
+        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User started speaking at {time.time() - call_start_time:.2f}s")
+
+    @session.on("input_speech_stopped")
+    def _on_input_speech_stopped(event):
+        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {time.time() - call_start_time:.2f}s")
+
     # Pass RoomInputOptions with noise cancellation and disable close_on_disconnect
     _room_input_options = RoomInputOptions(
         close_on_disconnect=False,
@@ -351,8 +367,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             
             # Bypasses the mutable_chat_context blocks in the plugin by sending the Content trigger directly
             turns = [
-                _gt.Content(parts=[_gt.Part(text=greeting)], role="model"),
-                _gt.Content(parts=[_gt.Part(text=".")], role="user")
+                _gt.Content(parts=[_gt.Part(text=greeting)], role="user")
             ]
             rt_session = session._activity.realtime_llm_session
             if rt_session is not None:
