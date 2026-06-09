@@ -1288,31 +1288,61 @@
           
           if (res && res.room) {
             const roomName = res.room;
-            let callActive = true;
-            let checks = 0;
-            const maxChecks = 150; // 5 minutes max per call
             
-            // Wait 2 seconds before checking active rooms list
-            await new Promise(r => setTimeout(r, 2000));
+            // 1. Wait for room to start (appear in active-rooms list, up to 10s)
+            let roomStarted = false;
+            for (let checkStart = 0; checkStart < 10; checkStart++) {
+              if (_batchCancelled) break;
+              try {
+                const activeRoomsData = await api('/api/active-rooms');
+                const rooms = activeRoomsData.rooms || [];
+                if (rooms.includes(roomName)) {
+                  roomStarted = true;
+                  break;
+                }
+              } catch (e) {
+                console.warn("Failed to check active rooms during startup", e);
+              }
+              await new Promise(r => setTimeout(r, 1000));
+            }
             
-            while (callActive && !_batchCancelled) {
-              const activeRoomsData = await api('/api/active-rooms');
-              const rooms = activeRoomsData.rooms || [];
+            if (roomStarted && !_batchCancelled) {
+              // 2. Room started. Wait for it to end/disappear.
+              let callActive = true;
+              let checks = 0;
+              const maxChecks = 150; // 5 minutes max per call
               
-              if (!rooms.includes(roomName)) {
-                callActive = false;
-              } else {
-                checks++;
-                if (checks >= maxChecks) {
-                  callActive = false;
-                  contact.error_message = 'Call timed out';
-                } else {
+              while (callActive && !_batchCancelled) {
+                try {
+                  const activeRoomsData = await api('/api/active-rooms');
+                  const rooms = activeRoomsData.rooms || [];
+                  
+                  if (!rooms.includes(roomName)) {
+                    callActive = false;
+                  } else {
+                    checks++;
+                    if (checks >= maxChecks) {
+                      callActive = false;
+                      contact.error_message = 'Call timed out';
+                    } else {
+                      await new Promise(r => setTimeout(r, 2000));
+                    }
+                  }
+                } catch (e) {
+                  console.warn("Failed to check active rooms during call progress", e);
+                  // On temporary network errors, wait and try again
                   await new Promise(r => setTimeout(r, 2000));
                 }
               }
+              contact.status = contact.error_message ? 'failed' : 'completed';
+            } else {
+              if (_batchCancelled) {
+                contact.status = 'pending';
+              } else {
+                contact.status = 'failed';
+                contact.error_message = 'Call failed to initialize';
+              }
             }
-            
-            contact.status = 'completed';
           } else {
             contact.status = 'failed';
             contact.error_message = 'Invalid server response';
