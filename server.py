@@ -219,6 +219,31 @@ async def api_dispatch_call(req: CallRequest):
         raise HTTPException(500, f"Dispatch failed: {exc}")
 
 
+@app.get("/api/active-rooms")
+async def api_get_active_rooms():
+    url    = await eff("LIVEKIT_URL")
+    key    = await eff("LIVEKIT_API_KEY")
+    secret = await eff("LIVEKIT_API_SECRET")
+
+    if not all([url, key, secret]):
+        return {"rooms": []}
+
+    try:
+        from livekit import api as lk_api
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx)) as session:
+            lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+            rooms_res = await lk.room.list_rooms(lk_api.ListRoomsRequest())
+            rooms = [r.name for r in rooms_res.rooms]
+            await lk.aclose()
+            return {"rooms": rooms}
+    except Exception as e:
+        logger.error("Failed to list active rooms: %s", e)
+        return {"rooms": []}
+
+
 # ── Calls ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/calls")
@@ -486,6 +511,24 @@ async def _run_campaign(campaign_id: str) -> None:
             success = await _dispatch_one(lk, lk_api_module, contact, room_name, prompt, profile)
             if success:
                 ok_count += 1
+                try:
+                    # Sequential loop: wait for room to start and then wait for it to close
+                    room_started = False
+                    for _ in range(10):
+                        rooms_res = await lk.room.list_rooms(lk_api_module.ListRoomsRequest())
+                        if any(r.name == room_name for r in rooms_res.rooms):
+                            room_started = True
+                            break
+                        await asyncio.sleep(1)
+                    
+                    if room_started:
+                        while True:
+                            rooms_res = await lk.room.list_rooms(lk_api_module.ListRoomsRequest())
+                            if not any(r.name == room_name for r in rooms_res.rooms):
+                                break
+                            await asyncio.sleep(2)
+                except Exception as wait_exc:
+                    logger.warning("Error waiting for campaign room %s to close: %s", room_name, wait_exc)
             else:
                 fail_count += 1
             if i < len(contacts) - 1:

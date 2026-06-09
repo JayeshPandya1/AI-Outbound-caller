@@ -170,6 +170,42 @@
       color: var(--accent2);
     }
 
+    .badge.active-call {
+      background: rgba(255, 77, 77, 0.1);
+      color: var(--danger);
+      border: 1px solid var(--danger);
+      animation: pulse 1.5s infinite;
+    }
+
+    .badge.pending-call {
+      background: rgba(90, 90, 90, 0.1);
+      color: var(--text2);
+      border: 1px solid var(--muted);
+    }
+
+    .badge.completed-call {
+      background: rgba(0, 255, 136, 0.1);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+
+    .badge.failed-call {
+      background: rgba(255, 170, 0, 0.1);
+      color: var(--warn);
+      border: 1px solid var(--warn);
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.6; }
+      100% { opacity: 1; }
+    }
+
+    tr.active-row td {
+      background: rgba(255, 77, 77, 0.05) !important;
+      border-bottom: 1px solid rgba(255, 77, 77, 0.2);
+    }
+
     /* Layout */
     .sidebar {
       position: fixed;
@@ -548,30 +584,81 @@
 
     <!-- BATCH CALL TAB -->
     <div id="tab-batch" class="tab-content">
-      <h2>Batch Disptach</h2>
-      <p>Upload a CSV file. Columns must include: <b>phone, lead_name, business_name, service_type</b></p>
-      <div class="card" style="max-width: 600px;">
-        <label>Select CSV</label>
-        <input type="file" id="bc-file" accept=".csv" />
-        <label>Call Delay (seconds between dials)</label>
-        <input type="number" id="bc-delay" value="3" min="1" />
-        <label>Agent Profile</label>
-        <select id="bc-profile">
-          <option value="">-- Use Default Settings --</option>
-        </select>
-        <div class="flex-between">
-          <button type="button" onclick="parseBatchCSV()">Preview</button>
-          <button type="button" class="primary" id="bc-start" disabled onclick="startBatch()">Start Batch</button>
+      <h2>Batch Dispatch & Progress</h2>
+      <p>Upload a CSV file. Columns will be dynamically mapped. Expects at least a phone number column.</p>
+      
+      <div class="grid-2">
+        <!-- Control Card -->
+        <div class="card">
+          <h3>Campaign Configuration</h3>
+          <div>
+            <label>Select CSV File</label>
+            <input type="file" id="bc-file" accept=".csv" onchange="parseBatchCSV()" />
+          </div>
+          <div>
+            <label>Call Delay (seconds between dials)</label>
+            <input type="number" id="bc-delay" value="3" min="1" />
+          </div>
+          <div>
+            <label>Agent Profile</label>
+            <select id="bc-profile">
+              <option value="">-- Use Default Settings --</option>
+            </select>
+          </div>
+          <div class="flex-between" style="margin-top: 15px;">
+            <button type="button" class="primary" id="bc-start" disabled onclick="startBatch()">▶ Start Batch</button>
+            <button type="button" class="danger" id="bc-stop" disabled onclick="stopBatch()">⏹ Stop Batch</button>
+          </div>
+        </div>
+
+        <!-- Summary Statistics (visible after parsing/during campaign) -->
+        <div id="bc-summary-card" class="card hidden">
+          <h3>Batch Execution Summary</h3>
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 15px;">
+            <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
+              <div style="color: var(--text2); font-size: 12px; text-transform: uppercase;">Total Leads</div>
+              <div id="stat-total" style="font-size: 24px; font-weight: bold; color: #fff;">0</div>
+            </div>
+            <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
+              <div style="color: var(--text2); font-size: 12px; text-transform: uppercase;">Pending</div>
+              <div id="stat-pending" style="font-size: 24px; font-weight: bold; color: var(--text2);">0</div>
+            </div>
+            <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
+              <div style="color: var(--danger); font-size: 12px; text-transform: uppercase;">Active Call</div>
+              <div id="stat-active" style="font-size: 24px; font-weight: bold; color: var(--danger);">0</div>
+            </div>
+            <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
+              <div style="color: var(--accent); font-size: 12px; text-transform: uppercase;">Completed</div>
+              <div id="stat-completed" style="font-size: 24px; font-weight: bold; color: var(--accent);">0</div>
+            </div>
+          </div>
+          
+          <label>Progress Rate: <span id="bc-percent">0%</span></label>
+          <div style="width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); height: 16px; overflow: hidden; margin-top: 5px;">
+            <div id="bc-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.3s ease;"></div>
+          </div>
         </div>
       </div>
-      <div id="bc-preview" class="hidden card">
-        <h4>Preview: <span id="bc-count">0</span> contacts</h4>
-        <div
-          style="max-height: 200px; overflow-y:auto; font-family:var(--mono); font-size:12px; margin-bottom:15px; background:var(--bg); border:1px solid var(--border); padding:10px;"
-          id="bc-data"></div>
-      </div>
-      <div id="bc-progress" class="hidden card">
-        <h4>Progress: <span id="bc-done">0</span> / <span id="bc-total">0</span></h4>
+
+      <!-- Lead preview / progress grid -->
+      <div id="bc-preview-container" class="card hidden" style="margin-top: 20px;">
+        <h3>Lead Queue & Progress Details</h3>
+        <div style="max-height: 400px; overflow-y: auto;">
+          <table id="tbl-batch-leads">
+            <thead>
+              <tr>
+                <th style="width: 50px;">#</th>
+                <th>Lead Name</th>
+                <th>Phone Number</th>
+                <th>Status</th>
+                <th>Info / Error</th>
+              </tr>
+            </thead>
+            <tbody id="bc-tbody">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -999,45 +1086,255 @@
 
     // -- Batch Call
     let _batchData = [];
+    let _batchCancelled = false;
+
     function parseBatchCSV() {
       const f = $('bc-file').files[0];
-      if (!f) return toast('Select a CSV file', true);
+      if (!f) return;
       const reader = new FileReader();
       reader.onload = (e) => {
         const text = e.target.result;
         const lines = text.split('\n').map(l => l.trim()).filter(l => l);
         if (lines.length < 2) return toast('Empty or invalid CSV', true);
-        const headers = lines[0].toLowerCase().split(',');
-        _batchData = lines.slice(1).map(l => {
-          const vals = l.split(',');
-          return headers.reduce((acc, h, i) => { acc[h.trim()] = vals[i] ? vals[i].trim() : ''; return acc; }, {});
-        }).filter(d => Boolean(d.phone));
-        $('bc-count').textContent = _batchData.length;
-        $('bc-data').textContent = JSON.stringify(_batchData.slice(0, 3), null, 2) + (_batchData.length > 3 ? '\n...' : '');
-        $('bc-preview').classList.remove('hidden');
-        $('bc-start').disabled = _batchData.length === 0;
+        
+        // Clean and process headers
+        const rawHeaders = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"“”]/g, ''));
+        
+        // Dynamic column mapping helper
+        let phoneIdx = -1;
+        let nameIdx = -1;
+        let bizIdx = -1;
+        let svcIdx = -1;
+        
+        rawHeaders.forEach((h, idx) => {
+          if (h === 'phone' || h === 'number' || h === 'phone number' || h === 'phone_number' || h === 'mobile' || h === 'contact') {
+            phoneIdx = idx;
+          } else if (h === 'lead_name' || h === 'lead name' || h === 'name' || h === 'full name' || h === 'fullname' || h === 'contact name' || h === 'customer name') {
+            nameIdx = idx;
+          } else if (h === 'business_name' || h === 'business name' || h === 'business' || h === 'company' || h === 'company name') {
+            bizIdx = idx;
+          } else if (h === 'service_type' || h === 'service type' || h === 'service' || h === 'service_type') {
+            svcIdx = idx;
+          }
+        });
+        
+        if (phoneIdx === -1) {
+          return toast('CSV must contain a phone/number column', true);
+        }
+        
+        _batchData = [];
+        let invalidCount = 0;
+        
+        for (let i = 1; i < lines.length; i++) {
+          const vals = lines[i].split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''));
+          if (vals.length < rawHeaders.length) continue;
+          
+          const phone = vals[phoneIdx];
+          const name = nameIdx !== -1 ? vals[nameIdx] : '';
+          const biz = bizIdx !== -1 ? vals[bizIdx] : '';
+          const svc = svcIdx !== -1 ? vals[svcIdx] : '';
+          
+          if (!phone) {
+            invalidCount++;
+            continue;
+          }
+          
+          _batchData.push({
+            phone: phone,
+            lead_name: name || 'there',
+            business_name: biz || 'our company',
+            service_type: svc || 'our service',
+            status: 'pending',
+            error_message: ''
+          });
+        }
+        
+        if (_batchData.length === 0) {
+          return toast('No valid contacts found in CSV', true);
+        }
+        
+        if (invalidCount > 0) {
+          toast(`Loaded ${_batchData.length} leads. Ignored ${invalidCount} rows without a phone number.`, false);
+        } else {
+          toast(`Loaded ${_batchData.length} leads.`, false);
+        }
+        
+        $('bc-start').disabled = false;
+        $('bc-summary-card').classList.remove('hidden');
+        $('bc-preview-container').classList.remove('hidden');
+        
+        updateBatchUI();
       };
       reader.readAsText(f);
     }
+
+    function updateBatchUI() {
+      // 1. Calculate and update stats
+      const total = _batchData.length;
+      let pending = 0;
+      let active = 0;
+      let completed = 0;
+      let failed = 0;
+      
+      _batchData.forEach(c => {
+        if (c.status === 'pending') pending++;
+        else if (c.status === 'active') active++;
+        else if (c.status === 'completed') completed++;
+        else if (c.status === 'failed') failed++;
+      });
+      
+      $('stat-total').textContent = total;
+      $('stat-pending').textContent = pending;
+      $('stat-active').textContent = active;
+      $('stat-completed').textContent = completed;
+      
+      // Update progress bar
+      const doneCount = completed + failed;
+      const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+      $('bc-percent').textContent = `${pct}%`;
+      $('bc-progress-bar').style.width = `${pct}%`;
+      
+      // 2. Render Lead Table Rows
+      const tbody = $('bc-tbody');
+      tbody.innerHTML = '';
+      
+      _batchData.forEach((c, idx) => {
+        let statusBadge = '';
+        let rowClass = '';
+        
+        if (c.status === 'pending') {
+          statusBadge = `<span class="badge pending-call">Pending</span>`;
+        } else if (c.status === 'active') {
+          statusBadge = `<span class="badge active-call">Active Call</span>`;
+          rowClass = 'class="active-row"';
+        } else if (c.status === 'completed') {
+          statusBadge = `<span class="badge completed-call">Completed</span>`;
+        } else if (c.status === 'failed') {
+          statusBadge = `<span class="badge failed-call">Failed</span>`;
+        }
+        
+        const details = c.error_message || (c.status === 'active' ? 'Dialing & connecting...' : (c.status === 'completed' ? 'Call finished successfully' : 'Waiting in queue'));
+        
+        tbody.innerHTML += `
+          <tr ${rowClass}>
+            <td>${idx + 1}</td>
+            <td><strong>${escapeHtml(c.lead_name)}</strong></td>
+            <td>${escapeHtml(c.phone)}</td>
+            <td>${statusBadge}</td>
+            <td><small style="color:var(--text2);">${escapeHtml(details)}</small></td>
+          </tr>
+        `;
+      });
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function stopBatch() {
+      _batchCancelled = true;
+      $('bc-stop').disabled = true;
+      toast('Stopping batch... waiting for current call to close.');
+    }
+
     async function startBatch() {
       if (!_batchData.length) return;
+      
+      _batchCancelled = false;
       $('bc-start').disabled = true;
-      $('bc-progress').classList.remove('hidden');
-      $('bc-total').textContent = _batchData.length;
-      let done = 0;
+      $('bc-stop').disabled = false;
+      $('bc-file').disabled = true;
+      
+      // Reset statuses to pending
+      _batchData.forEach(c => {
+        c.status = 'pending';
+        c.error_message = '';
+      });
+      updateBatchUI();
+      
       const delay = parseInt($('bc-delay').value || 3) * 1000;
       const pid = $('bc-profile').value || null;
-
-      for (const c of _batchData) {
+      
+      for (let i = 0; i < _batchData.length; i++) {
+        if (_batchCancelled) {
+          toast('Batch stopped.');
+          break;
+        }
+        
+        const contact = _batchData[i];
+        contact.status = 'active';
+        updateBatchUI();
+        
+        // Auto-scroll the active row into view in the scrollable table
+        const row = $('bc-tbody').children[i];
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        
         try {
-          await apiPost('/api/call', { phone: c.phone, lead_name: c.lead_name || 'there', business_name: c.business_name || 'our company', service_type: c.service_type || 'our service', agent_profile_id: pid });
-        } catch (e) { }
-        done++;
-        $('bc-done').textContent = done;
-        if (done < _batchData.length) await new Promise(r => setTimeout(r, delay));
+          const res = await apiPost('/api/call', {
+            phone: contact.phone,
+            lead_name: contact.lead_name,
+            business_name: contact.business_name,
+            service_type: contact.service_type,
+            agent_profile_id: pid
+          });
+          
+          if (res && res.room) {
+            const roomName = res.room;
+            let callActive = true;
+            let checks = 0;
+            const maxChecks = 150; // 5 minutes max per call
+            
+            // Wait 2 seconds before checking active rooms list
+            await new Promise(r => setTimeout(r, 2000));
+            
+            while (callActive && !_batchCancelled) {
+              const activeRoomsData = await api('/api/active-rooms');
+              const rooms = activeRoomsData.rooms || [];
+              
+              if (!rooms.includes(roomName)) {
+                callActive = false;
+              } else {
+                checks++;
+                if (checks >= maxChecks) {
+                  callActive = false;
+                  contact.error_message = 'Call timed out';
+                } else {
+                  await new Promise(r => setTimeout(r, 2000));
+                }
+              }
+            }
+            
+            contact.status = 'completed';
+          } else {
+            contact.status = 'failed';
+            contact.error_message = 'Invalid server response';
+          }
+        } catch (err) {
+          contact.status = 'failed';
+          contact.error_message = err.message || 'Call failed';
+        }
+        
+        updateBatchUI();
+        
+        if (i < _batchData.length - 1 && !_batchCancelled) {
+          await new Promise(r => setTimeout(r, delay));
+        }
       }
-      toast(`Batch completed! ${done} dispatched.`);
+      
+      $('bc-start').disabled = false;
+      $('bc-stop').disabled = true;
+      $('bc-file').disabled = false;
+      toast('Batch processing complete.');
     }
+
 
     // -- Campaigns
     async function loadCampaigns() {
