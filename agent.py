@@ -267,6 +267,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await _log("info", f"[LATENCY AUDIT] Callee answered. Ringing/pickup duration: {time.time() - t_dial_start:.2f}s")
         except Exception as exc:
             await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
+            try:
+                from db import log_call
+                await log_call(
+                    phone_number=phone_number,
+                    lead_name=lead_name,
+                    outcome="no_answer",
+                    reason=f"SIP dial failed: {str(exc)}",
+                    duration_seconds=0
+                )
+            except Exception as log_exc:
+                logger.error("Failed to log failed SIP dial: %s", log_exc)
             ctx.shutdown()
             return
         await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")

@@ -190,6 +190,12 @@
     }
 
     .badge.failed-call {
+      background: rgba(255, 77, 77, 0.1);
+      color: var(--danger);
+      border: 1px solid var(--danger);
+    }
+
+    .badge.not-responded-call {
       background: rgba(255, 170, 0, 0.1);
       color: var(--warn);
       border: 1px solid var(--warn);
@@ -605,31 +611,40 @@
               <option value="">-- Use Default Settings --</option>
             </select>
           </div>
-          <div class="flex-between" style="margin-top: 15px;">
+          <div class="flex-between" style="margin-top: 15px; gap: 10px;">
             <button type="button" class="primary" id="bc-start" disabled onclick="startBatch()">▶ Start Batch</button>
             <button type="button" class="danger" id="bc-stop" disabled onclick="stopBatch()">⏹ Stop Batch</button>
+            <button type="button" id="bc-export" disabled onclick="exportBatchCSV()">📥 Export Results</button>
           </div>
         </div>
 
         <!-- Summary Statistics (visible after parsing/during campaign) -->
         <div id="bc-summary-card" class="card hidden">
           <h3>Batch Execution Summary</h3>
-          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 15px;">
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
             <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
-              <div style="color: var(--text2); font-size: 12px; text-transform: uppercase;">Total Leads</div>
-              <div id="stat-total" style="font-size: 24px; font-weight: bold; color: #fff;">0</div>
+              <div style="color: var(--text2); font-size: 11px; text-transform: uppercase;">Total Leads</div>
+              <div id="stat-total" style="font-size: 22px; font-weight: bold; color: #fff;">0</div>
             </div>
             <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
-              <div style="color: var(--text2); font-size: 12px; text-transform: uppercase;">Pending</div>
-              <div id="stat-pending" style="font-size: 24px; font-weight: bold; color: var(--text2);">0</div>
+              <div style="color: var(--text2); font-size: 11px; text-transform: uppercase;">Pending</div>
+              <div id="stat-pending" style="font-size: 22px; font-weight: bold; color: var(--text2);">0</div>
             </div>
             <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
-              <div style="color: var(--danger); font-size: 12px; text-transform: uppercase;">Active Call</div>
-              <div id="stat-active" style="font-size: 24px; font-weight: bold; color: var(--danger);">0</div>
+              <div style="color: var(--danger); font-size: 11px; text-transform: uppercase;">Active</div>
+              <div id="stat-active" style="font-size: 22px; font-weight: bold; color: var(--danger);">0</div>
             </div>
             <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
-              <div style="color: var(--accent); font-size: 12px; text-transform: uppercase;">Completed</div>
-              <div id="stat-completed" style="font-size: 24px; font-weight: bold; color: var(--accent);">0</div>
+              <div style="color: var(--accent); font-size: 11px; text-transform: uppercase;">Completed</div>
+              <div id="stat-completed" style="font-size: 22px; font-weight: bold; color: var(--accent);">0</div>
+            </div>
+            <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
+              <div style="color: var(--warn); font-size: 11px; text-transform: uppercase;">No Answer</div>
+              <div id="stat-not-responded" style="font-size: 22px; font-weight: bold; color: var(--warn);">0</div>
+            </div>
+            <div style="background: var(--bg); padding: 10px; border-radius: var(--r); border: 1px solid var(--border); text-align: center;">
+              <div style="color: var(--danger); font-size: 11px; text-transform: uppercase;">Failed</div>
+              <div id="stat-failed" style="font-size: 22px; font-weight: bold; color: var(--danger);">0</div>
             </div>
           </div>
           
@@ -1160,6 +1175,7 @@
         }
         
         $('bc-start').disabled = false;
+        $('bc-export').disabled = false;
         $('bc-summary-card').classList.remove('hidden');
         $('bc-preview-container').classList.remove('hidden');
         
@@ -1174,12 +1190,14 @@
       let pending = 0;
       let active = 0;
       let completed = 0;
+      let notResponded = 0;
       let failed = 0;
       
       _batchData.forEach(c => {
         if (c.status === 'pending') pending++;
         else if (c.status === 'active') active++;
         else if (c.status === 'completed') completed++;
+        else if (c.status === 'not_responded') notResponded++;
         else if (c.status === 'failed') failed++;
       });
       
@@ -1187,9 +1205,11 @@
       $('stat-pending').textContent = pending;
       $('stat-active').textContent = active;
       $('stat-completed').textContent = completed;
+      $('stat-not-responded').textContent = notResponded;
+      $('stat-failed').textContent = failed;
       
       // Update progress bar
-      const doneCount = completed + failed;
+      const doneCount = completed + failed + notResponded;
       const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
       $('bc-percent').textContent = `${pct}%`;
       $('bc-progress-bar').style.width = `${pct}%`;
@@ -1209,6 +1229,8 @@
           rowClass = 'class="active-row"';
         } else if (c.status === 'completed') {
           statusBadge = `<span class="badge completed-call">Completed</span>`;
+        } else if (c.status === 'not_responded') {
+          statusBadge = `<span class="badge not-responded-call">Not Responded</span>`;
         } else if (c.status === 'failed') {
           statusBadge = `<span class="badge failed-call">Failed</span>`;
         }
@@ -1237,6 +1259,35 @@
         .replace(/'/g, "&#039;");
     }
 
+    function exportBatchCSV() {
+      if (!_batchData.length) return toast('No data to export', true);
+      
+      const headers = ['Phone', 'Lead_Name', 'Business_Name', 'Service_Type', 'Call_Status', 'Call_Details'];
+      const rows = _batchData.map(c => [
+        c.phone,
+        c.lead_name,
+        c.business_name,
+        c.service_type,
+        c.status,
+        c.error_message || ''
+      ]);
+      
+      const csvContent = "data:text/csv;charset=utf-8," 
+        + [headers.join(','), ...rows.map(r => r.map(val => `"${String(val).replace(/"/g, '""')}"`).join(','))].join('\n');
+      
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      
+      const dateStr = new Date().toISOString().slice(0, 10);
+      link.setAttribute("download", `batch_results_${dateStr}.csv`);
+      document.body.appendChild(link);
+      
+      link.click();
+      document.body.removeChild(link);
+      toast('Export completed successfully');
+    }
+
     function stopBatch() {
       _batchCancelled = true;
       $('bc-stop').disabled = true;
@@ -1249,6 +1300,7 @@
       _batchCancelled = false;
       $('bc-start').disabled = true;
       $('bc-stop').disabled = false;
+      $('bc-export').disabled = true;
       $('bc-file').disabled = true;
       
       // Reset statuses to pending
@@ -1334,13 +1386,79 @@
                   await new Promise(r => setTimeout(r, 2000));
                 }
               }
-              contact.status = contact.error_message ? 'failed' : 'completed';
+              // Check the database for the call outcome to get the exact result label!
+              let finalStatus = 'completed';
+              let callDetails = 'Call finished';
+              
+              if (!contact.error_message) {
+                try {
+                  const callLogsRes = await api(`/api/crm/calls?phone=${encodeURIComponent(contact.phone)}`);
+                  if (callLogsRes && callLogsRes.data && callLogsRes.data.length > 0) {
+                    const latestCall = callLogsRes.data[0];
+                    const logTime = new Date(latestCall.timestamp);
+                    const now = new Date();
+                    const diffMs = now - logTime;
+                    
+                    if (diffMs < 180000) {
+                      const dbOutcome = latestCall.outcome;
+                      
+                      if (dbOutcome === 'no_answer') {
+                        finalStatus = 'not_responded';
+                        callDetails = 'No Answer / SIP dial failed';
+                      } else if (dbOutcome === 'voicemail') {
+                        finalStatus = 'not_responded';
+                        callDetails = 'Left Voicemail';
+                      } else if (dbOutcome === 'wrong_number') {
+                        finalStatus = 'not_responded';
+                        callDetails = 'Wrong Number';
+                      } else if (dbOutcome === 'not_interested') {
+                        finalStatus = 'completed';
+                        callDetails = 'Not Interested';
+                      } else if (dbOutcome === 'booked') {
+                        finalStatus = 'completed';
+                        callDetails = 'Booked Appointment';
+                      } else if (dbOutcome === 'dropped') {
+                        finalStatus = 'completed';
+                        callDetails = 'Call Dropped / Hung up';
+                      } else if (dbOutcome === 'callback_requested') {
+                        finalStatus = 'completed';
+                        callDetails = 'Callback Requested';
+                      } else {
+                        callDetails = dbOutcome || 'Call completed';
+                      }
+                    }
+                  }
+                } catch (err) {
+                  console.warn("Failed to fetch final call log outcome:", err);
+                }
+              } else {
+                finalStatus = 'failed';
+                callDetails = contact.error_message;
+              }
+              
+              contact.status = finalStatus;
+              contact.error_message = callDetails;
             } else {
               if (_batchCancelled) {
                 contact.status = 'pending';
               } else {
-                contact.status = 'failed';
-                contact.error_message = 'Call failed to initialize';
+                let finalStatus = 'failed';
+                let callDetails = 'Call failed to initialize';
+                try {
+                  const callLogsRes = await api(`/api/crm/calls?phone=${encodeURIComponent(contact.phone)}`);
+                  if (callLogsRes && callLogsRes.data && callLogsRes.data.length > 0) {
+                    const latestCall = callLogsRes.data[0];
+                    const logTime = new Date(latestCall.timestamp);
+                    const now = new Date();
+                    const diffMs = now - logTime;
+                    if (diffMs < 180000 && latestCall.outcome === 'no_answer') {
+                      finalStatus = 'not_responded';
+                      callDetails = 'No Answer / SIP dial failed';
+                    }
+                  }
+                } catch (e) {}
+                contact.status = finalStatus;
+                contact.error_message = callDetails;
               }
             }
           } else {
@@ -1361,6 +1479,7 @@
       
       $('bc-start').disabled = false;
       $('bc-stop').disabled = true;
+      $('bc-export').disabled = false;
       $('bc-file').disabled = false;
       toast('Batch processing complete.');
     }
