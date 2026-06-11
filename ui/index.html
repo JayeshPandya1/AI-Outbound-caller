@@ -1616,6 +1616,24 @@
     // -- Call Logs
     let _logPage = 1;
     window.logPage = (p) => { _logPage = p; $('log-page-ind').textContent = `Page ${_logPage}`; loadCalls(); };
+    function renderRecordingCell(c) {
+      if (c.recording_url) {
+        const playUrl = c.recording_url.includes('vobiz') 
+          ? `/api/vobiz/stream-recording?url=${encodeURIComponent(c.recording_url)}` 
+          : c.recording_url;
+        return `<a href="${playUrl}" target="_blank">Listen 🎧</a>`;
+      }
+      if (c.timestamp) {
+        const callTime = new Date(c.timestamp);
+        const diffSeconds = (new Date() - callTime) / 1000;
+        if (diffSeconds < 150) {
+          const remainingMinutes = Math.max(1, Math.ceil((150 - diffSeconds) / 60));
+          return `<small style="color:var(--warning); font-style:italic;">Processing (~${remainingMinutes}m) ⏳</small>`;
+        }
+      }
+      return '-';
+    }
+
     async function loadCalls() {
       try {
         const res = await api(`/api/calls?page=${_logPage}&limit=20`);
@@ -1627,7 +1645,7 @@
         <td><strong>${c.phone_number}</strong><br><small class="text2">${c.lead_name || '?'}</small></td>
         <td><span class="badge ${c.outcome || 'unknown'}">${c.outcome || 'pending'}</span></td>
         <td>${c.duration_seconds || 0}s</td>
-        <td>${c.recording_url ? `<a href="${c.recording_url.includes('vobiz') ? `/api/vobiz/stream-recording?url=${encodeURIComponent(c.recording_url)}` : c.recording_url}" target="_blank">Listen 🎧</a>` : '-'}</td>
+        <td>${renderRecordingCell(c)}</td>
         <td>
           <input type="text" id="n_${c.id}" value="${c.notes || c.reason || ''}" style="margin:0; padding:4px;" />
           <button style="padding:4px 8px; margin-left:5px;" onclick="saveNotes('${c.id}')">💾</button>
@@ -1667,7 +1685,7 @@
         <div><span class="badge ${c.outcome}">${c.outcome}</span> &middot; ${c.duration_seconds}s</div>
         ${c.reason ? `<div style="margin-top:5px; font-style:italic; font-size:12px; color:var(--text2)">"${c.reason}"</div>` : ''}
         ${c.notes ? `<div style="margin-top:5px; font-size:13px;">Notes: ${c.notes}</div>` : ''}
-        ${c.recording_url ? `<div style="margin-top:5px;"><a href="${c.recording_url.includes('vobiz') ? `/api/vobiz/stream-recording?url=${encodeURIComponent(c.recording_url)}` : c.recording_url}" target="_blank">Recording 🎧</a></div>` : ''}
+        ${renderRecordingCell(c) !== '-' ? `<div style="margin-top:5px;">${renderRecordingCell(c).replace('Listen 🎧', 'Recording 🎧')}</div>` : ''}
       </div>`;
         });
       } catch (e) { }

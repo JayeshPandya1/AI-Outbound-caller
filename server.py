@@ -385,9 +385,16 @@ async def api_get_contact_calls(phone: str = Query(...)):
     return {"data": await get_calls_by_phone(phone)}
 
 
-async def fetch_vobiz_recording_background(call_id: str, call_uuid: str, phone_clean: str, duration: Optional[int]):
-    # Wait 8 seconds to ensure Vobiz has finished processing and saving the recording
-    await asyncio.sleep(8)
+async def fetch_vobiz_recording_background(
+    call_id: str,
+    call_uuid: Optional[str],
+    sip_call_id: Optional[str],
+    phone_clean: str,
+    duration: Optional[int]
+):
+    # Wait 120 seconds (2 minutes) to ensure Vobiz has fully processed and saved the recording
+    await asyncio.sleep(120)
+    
     try:
         auth_id = await get_setting("VOBIZ_AUTH_ID") or os.getenv("VOBIZ_AUTH_ID")
         auth_token = await get_setting("VOBIZ_AUTH_TOKEN") or os.getenv("VOBIZ_AUTH_TOKEN")
@@ -399,51 +406,73 @@ async def fetch_vobiz_recording_background(call_id: str, call_uuid: str, phone_c
             )
             return
 
-        # Query Vobiz Recordings API
         url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Recording/"
         headers = {
             "X-Auth-ID": auth_id,
             "X-Auth-Token": auth_token,
             "Accept": "application/json"
         }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=15) as resp:
-                if resp.status != 200:
-                    resp_text = await resp.text()
-                    await log_error(
-                        "vobiz_webhook_bg",
-                        f"Failed to fetch Vobiz recordings: Status {resp.status}",
-                        detail=resp_text,
-                        level="error"
-                    )
-                    return
-                recordings = await resp.json()
 
-        # Handle Vobiz pagination structure: recordings are under "objects" key
-        recordings_list = recordings.get("objects") if isinstance(recordings, dict) else recordings
-        if not isinstance(recordings_list, list):
+        max_attempts = 3
+        retry_delay = 10
+        matched_rec = None
+
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                await asyncio.sleep(retry_delay)
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=15) as resp:
+                        if resp.status != 200:
+                            resp_text = await resp.text()
+                            await log_error(
+                                "vobiz_webhook_bg",
+                                f"Attempt {attempt}: Failed to fetch Vobiz recordings list (Status {resp.status})",
+                                detail=resp_text,
+                                level="warning"
+                            )
+                            continue
+                        recordings = await resp.json()
+            except Exception as conn_err:
+                await log_error(
+                    "vobiz_webhook_bg",
+                    f"Attempt {attempt}: Connection error querying Vobiz API: {conn_err}",
+                    level="warning"
+                )
+                continue
+
+            recordings_list = recordings.get("objects") if isinstance(recordings, dict) else recordings
+            if not isinstance(recordings_list, list):
+                await log_error(
+                    "vobiz_webhook_bg",
+                    f"Attempt {attempt}: Invalid recordings payload format (expected objects list key)",
+                    detail=json.dumps(recordings),
+                    level="warning"
+                )
+                continue
+
+            # Match by call_uuid or sip_call_id
+            for r in recordings_list:
+                r_call_uuid = r.get("call_uuid") or r.get("CallUUID") or r.get("sip_call_id") or r.get("SIPCallID") or r.get("recording_id")
+                if (call_uuid and r_call_uuid == call_uuid) or (sip_call_id and r_call_uuid == sip_call_id):
+                    matched_rec = r
+                    break
+
+            if matched_rec:
+                break
+
             await log_error(
                 "vobiz_webhook_bg",
-                "Invalid response format from Vobiz API: expected objects list key",
-                detail=json.dumps(recordings),
-                level="error"
+                f"Attempt {attempt}: Recording not found yet in Vobiz database for call_uuid: {call_uuid} / sip_call_id: {sip_call_id}. Retrying...",
+                detail=json.dumps({"recordings_found": len(recordings_list)}),
+                level="info"
             )
-            return
-
-        # Iterate and match by call_uuid or sip_call_id
-        matched_rec = None
-        for r in recordings_list:
-            r_call_uuid = r.get("call_uuid") or r.get("CallUUID") or r.get("sip_call_id") or r.get("SIPCallID")
-            if r_call_uuid == call_uuid:
-                matched_rec = r
-                break
 
         if not matched_rec:
             await log_error(
                 "vobiz_webhook_bg",
-                f"No recording found matching call_uuid {call_uuid} in Vobiz database",
-                detail=json.dumps({"call_uuid": call_uuid, "recordings_found": len(recordings_list)}),
+                f"Failed: Recording not found in Vobiz database after {max_attempts} attempts for call_uuid {call_uuid} / sip_call_id {sip_call_id}",
                 level="warning"
             )
             return
@@ -638,27 +667,29 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
             # If recording url is missing from Hangup payload, check if we can query the Recording API in background
             auth_id = await get_setting("VOBIZ_AUTH_ID") or os.getenv("VOBIZ_AUTH_ID")
             auth_token = await get_setting("VOBIZ_AUTH_TOKEN") or os.getenv("VOBIZ_AUTH_TOKEN")
-            call_uuid = get_val_case_insensitive(payload, ["call_uuid", "calluuid", "sip_call_id", "sipcallid"])
+            call_uuid = get_val_case_insensitive(payload, ["call_uuid", "calluuid"])
+            sip_call_id = get_val_case_insensitive(payload, ["sip_call_id", "sipcallid", "sipcall_id"])
             
-            if auth_id and auth_token and call_uuid:
+            if auth_id and auth_token and (call_uuid or sip_call_id):
                 asyncio.create_task(
-                    fetch_vobiz_recording_background(call_id, call_uuid, phone_clean, duration)
+                    fetch_vobiz_recording_background(call_id, call_uuid, sip_call_id, phone_clean, duration)
                 )
                 await log_error(
                     "vobiz_webhook",
                     f"Call ended for {phone_clean}. Queued background recording API check.",
-                    detail=json.dumps({"call_uuid": call_uuid}),
+                    detail=json.dumps({"call_uuid": call_uuid, "sip_call_id": sip_call_id}),
                     level="info"
                 )
                 return {
                     "status": "queued_recording_lookup",
                     "call_id": call_id,
-                    "call_uuid": call_uuid
+                    "call_uuid": call_uuid,
+                    "sip_call_id": sip_call_id
                 }
             else:
                 await log_error(
                     "vobiz_webhook",
-                    "Webhook ignored: Missing recording URL in payload, and Vobiz API credentials or CallUUID is missing",
+                    "Webhook ignored: Missing recording URL in payload, and Vobiz API credentials or CallUUID/SIPCallID is missing",
                     detail=json.dumps(payload),
                     level="warning"
                 )
