@@ -420,9 +420,20 @@ async def fetch_vobiz_recording_background(call_id: str, call_uuid: str, phone_c
                     return
                 recordings = await resp.json()
 
+        # Handle Vobiz pagination structure: recordings are under "objects" key
+        recordings_list = recordings.get("objects") if isinstance(recordings, dict) else recordings
+        if not isinstance(recordings_list, list):
+            await log_error(
+                "vobiz_webhook_bg",
+                "Invalid response format from Vobiz API: expected objects list key",
+                detail=json.dumps(recordings),
+                level="error"
+            )
+            return
+
         # Iterate and match by call_uuid or sip_call_id
         matched_rec = None
-        for r in recordings:
+        for r in recordings_list:
             r_call_uuid = r.get("call_uuid") or r.get("CallUUID") or r.get("sip_call_id") or r.get("SIPCallID")
             if r_call_uuid == call_uuid:
                 matched_rec = r
@@ -432,7 +443,7 @@ async def fetch_vobiz_recording_background(call_id: str, call_uuid: str, phone_c
             await log_error(
                 "vobiz_webhook_bg",
                 f"No recording found matching call_uuid {call_uuid} in Vobiz database",
-                detail=json.dumps({"call_uuid": call_uuid, "recordings_found": len(recordings)}),
+                detail=json.dumps({"call_uuid": call_uuid, "recordings_found": len(recordings_list)}),
                 level="warning"
             )
             return
