@@ -390,21 +390,72 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
     # 1. Verify webhook secret key for security (if configured)
     expected_secret = await get_setting("VOBIZ_WEBHOOK_SECRET") or os.getenv("VOBIZ_WEBHOOK_SECRET")
     if expected_secret and secret != expected_secret:
+        await log_error(
+            "vobiz_webhook",
+            f"Unauthorized webhook attempt: secret mismatch (got {secret})",
+            level="warning"
+        )
         raise HTTPException(401, "Unauthorized: Invalid webhook secret")
 
-    # 2. Parse payload JSON
-    try:
-        payload = await req.json()
-        logger.info("Received Vobiz webhook payload: %s", json.dumps(payload))
-    except Exception as e:
-        logger.error("Failed to parse Vobiz webhook payload: %s", e)
-        raise HTTPException(400, "Invalid JSON payload")
-
-    # 3. Extract recording details and destination numbers
-    phone = payload.get("destination_number") or payload.get("to") or payload.get("phone_number") or payload.get("phone")
-    rec_url = payload.get("recording_url") or payload.get("recording") or payload.get("audio_url")
-    duration = payload.get("duration") or payload.get("duration_seconds")
+    # 2. Parse payload: Support both JSON and Form Urlencoded
+    payload = {}
+    content_type = req.headers.get("content-type", "")
     
+    try:
+        if "application/x-www-form-urlencoded" in content_type:
+            form_data = await req.form()
+            payload = dict(form_data)
+            await log_error(
+                "vobiz_webhook",
+                "Received form-encoded webhook payload",
+                detail=json.dumps(payload),
+                level="info"
+            )
+        else:
+            # Default to JSON parsing, fallback to form parsing on error
+            try:
+                payload = await req.json()
+                await log_error(
+                    "vobiz_webhook",
+                    "Received JSON webhook payload",
+                    detail=json.dumps(payload),
+                    level="info"
+                )
+            except Exception:
+                form_data = await req.form()
+                if form_data:
+                    payload = dict(form_data)
+                    await log_error(
+                        "vobiz_webhook",
+                        "Received form-encoded payload (fallback due to JSON parse failure)",
+                        detail=json.dumps(payload),
+                        level="info"
+                    )
+                else:
+                    raise
+    except Exception as parse_err:
+        await log_error(
+            "vobiz_webhook",
+            f"Failed to parse webhook payload: {parse_err}",
+            level="error"
+        )
+        raise HTTPException(400, f"Invalid payload format: {parse_err}")
+
+    # 3. Extract variables with case-insensitivity
+    def get_val_case_insensitive(d, keys_list):
+        for k in keys_list:
+            if k in d:
+                return d[k]
+            # Case-insensitive check
+            for dict_key, dict_val in d.items():
+                if dict_key.lower() == k.lower():
+                    return dict_val
+        return None
+
+    phone = get_val_case_insensitive(payload, ["destination_number", "to", "phone_number", "phone", "dest_number", "destination"])
+    rec_url = get_val_case_insensitive(payload, ["recording_url", "recording", "audio_url", "rec_url", "recording_link", "recordingurl"])
+    duration = get_val_case_insensitive(payload, ["duration", "duration_seconds", "billsec", "duration_sec"])
+
     if duration:
         try:
             duration = int(duration)
@@ -412,7 +463,12 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
             duration = None
 
     if not phone:
-        logger.warning("Vobiz webhook missing destination phone number")
+        await log_error(
+            "vobiz_webhook",
+            "Webhook ignored: Missing destination phone number in payload",
+            detail=json.dumps(payload),
+            level="warning"
+        )
         return {"status": "ignored", "reason": "missing phone number"}
 
     # Normalize phone number prefix
@@ -430,7 +486,12 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
             calls = await get_calls_by_phone(phone)
 
         if not calls:
-            logger.warning("No call logs found in Supabase matching phone: %s", phone_clean)
+            await log_error(
+                "vobiz_webhook",
+                f"Webhook ignored: No call logs found in Supabase matching phone: {phone_clean}",
+                detail=json.dumps(payload),
+                level="warning"
+            )
             return {"status": "ignored", "reason": "no matching call log found"}
 
         # Find the latest call log (most recent)
@@ -439,18 +500,24 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
         # Verify call log is fresh (within 10 minutes)
         log_time_str = latest_call.get("timestamp")
         is_fresh = True
+        diff_seconds = 0
         if log_time_str:
             try:
                 from datetime import datetime, timezone
                 log_time = datetime.fromisoformat(log_time_str.replace("Z", "+00:00"))
-                diff = (datetime.now(timezone.utc) - log_time).total_seconds()
-                if diff > 600:
+                diff_seconds = (datetime.now(timezone.utc) - log_time).total_seconds()
+                if diff_seconds > 600:
                     is_fresh = False
             except Exception as t_err:
                 logger.warning("Failed to parse log time for validation: %s", t_err)
 
         if not is_fresh:
-            logger.warning("Latest call log for %s is stale. Skipping update.", phone_clean)
+            await log_error(
+                "vobiz_webhook",
+                f"Webhook ignored: Latest call log for {phone_clean} is stale ({diff_seconds:.1f} seconds ago)",
+                detail=json.dumps({"payload": payload, "latest_call": latest_call}),
+                level="warning"
+            )
             return {"status": "ignored", "reason": "matching log is stale"}
 
         # 5. Update call record with Vobiz's link and actual duration
@@ -458,16 +525,36 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
         if rec_url:
             ok = await update_call_recording(call_id, rec_url, duration)
             if ok:
-                logger.info("Successfully updated call %s with Vobiz recording: %s", call_id, rec_url)
+                await log_error(
+                    "vobiz_webhook",
+                    f"Success: Updated call {call_id} ({phone_clean}) with Vobiz recording",
+                    detail=f"URL: {rec_url}, Duration: {duration}s",
+                    level="info"
+                )
                 return {"status": "updated", "call_id": call_id}
             else:
-                logger.error("Failed to update call recording for ID %s", call_id)
+                await log_error(
+                    "vobiz_webhook",
+                    f"Failed to update call recording for ID {call_id} in database",
+                    level="error"
+                )
                 raise HTTPException(500, "Database update failed")
         else:
+            await log_error(
+                "vobiz_webhook",
+                f"Webhook ignored: Missing recording URL in payload",
+                detail=json.dumps(payload),
+                level="warning"
+            )
             return {"status": "ignored", "reason": "missing recording URL in payload"}
 
     except Exception as e:
-        logger.error("Error processing Vobiz webhook: %s", e)
+        await log_error(
+            "vobiz_webhook",
+            f"Error processing webhook: {e}",
+            detail=json.dumps(payload),
+            level="error"
+        )
         raise HTTPException(500, str(e))
 
 
