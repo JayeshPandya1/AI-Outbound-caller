@@ -29,7 +29,7 @@ from db import (
     get_all_agent_profiles, get_agent_profile, create_agent_profile, update_agent_profile,
     delete_agent_profile, set_default_agent_profile, get_calls_by_phone, get_campaign,
     get_contacts, get_errors, get_logs, get_setting, get_stats, init_db, log_error,
-    save_settings, set_setting, update_call_notes, update_campaign_run_stats, update_campaign_status,
+    save_settings, set_setting, update_call_notes, update_call_recording, update_campaign_run_stats, update_campaign_status,
     delete_campaign,
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
@@ -383,6 +383,92 @@ async def api_get_contacts():
 @app.get("/api/crm/calls")
 async def api_get_contact_calls(phone: str = Query(...)):
     return {"data": await get_calls_by_phone(phone)}
+
+
+@app.post("/api/vobiz/webhook")
+async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
+    # 1. Verify webhook secret key for security (if configured)
+    expected_secret = await get_setting("VOBIZ_WEBHOOK_SECRET") or os.getenv("VOBIZ_WEBHOOK_SECRET")
+    if expected_secret and secret != expected_secret:
+        raise HTTPException(401, "Unauthorized: Invalid webhook secret")
+
+    # 2. Parse payload JSON
+    try:
+        payload = await req.json()
+        logger.info("Received Vobiz webhook payload: %s", json.dumps(payload))
+    except Exception as e:
+        logger.error("Failed to parse Vobiz webhook payload: %s", e)
+        raise HTTPException(400, "Invalid JSON payload")
+
+    # 3. Extract recording details and destination numbers
+    phone = payload.get("destination_number") or payload.get("to") or payload.get("phone_number") or payload.get("phone")
+    rec_url = payload.get("recording_url") or payload.get("recording") or payload.get("audio_url")
+    duration = payload.get("duration") or payload.get("duration_seconds")
+    
+    if duration:
+        try:
+            duration = int(duration)
+        except ValueError:
+            duration = None
+
+    if not phone:
+        logger.warning("Vobiz webhook missing destination phone number")
+        return {"status": "ignored", "reason": "missing phone number"}
+
+    # Normalize phone number prefix
+    phone_clean = phone.strip()
+    if not phone_clean.startswith("+"):
+        if len(phone_clean) == 10:
+            phone_clean = f"+91{phone_clean}"
+        elif len(phone_clean) == 12 and phone_clean.startswith("91"):
+            phone_clean = f"+{phone_clean}"
+
+    # 4. Find the matching call log in database
+    try:
+        calls = await get_calls_by_phone(phone_clean)
+        if not calls and phone_clean != phone:
+            calls = await get_calls_by_phone(phone)
+
+        if not calls:
+            logger.warning("No call logs found in Supabase matching phone: %s", phone_clean)
+            return {"status": "ignored", "reason": "no matching call log found"}
+
+        # Find the latest call log (most recent)
+        latest_call = calls[0]
+        
+        # Verify call log is fresh (within 10 minutes)
+        log_time_str = latest_call.get("timestamp")
+        is_fresh = True
+        if log_time_str:
+            try:
+                from datetime import datetime, timezone
+                log_time = datetime.fromisoformat(log_time_str.replace("Z", "+00:00"))
+                diff = (datetime.now(timezone.utc) - log_time).total_seconds()
+                if diff > 600:
+                    is_fresh = False
+            except Exception as t_err:
+                logger.warning("Failed to parse log time for validation: %s", t_err)
+
+        if not is_fresh:
+            logger.warning("Latest call log for %s is stale. Skipping update.", phone_clean)
+            return {"status": "ignored", "reason": "matching log is stale"}
+
+        # 5. Update call record with Vobiz's link and actual duration
+        call_id = latest_call["id"]
+        if rec_url:
+            ok = await update_call_recording(call_id, rec_url, duration)
+            if ok:
+                logger.info("Successfully updated call %s with Vobiz recording: %s", call_id, rec_url)
+                return {"status": "updated", "call_id": call_id}
+            else:
+                logger.error("Failed to update call recording for ID %s", call_id)
+                raise HTTPException(500, "Database update failed")
+        else:
+            return {"status": "ignored", "reason": "missing recording URL in payload"}
+
+    except Exception as e:
+        logger.error("Error processing Vobiz webhook: %s", e)
+        raise HTTPException(500, str(e))
 
 
 # ── Agent Profiles ────────────────────────────────────────────────────────────

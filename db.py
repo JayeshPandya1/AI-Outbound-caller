@@ -313,6 +313,15 @@ async def update_call_notes(call_id: str, notes: str) -> bool:
     return len(result.data or []) > 0
 
 
+async def update_call_recording(call_id: str, recording_url: str, duration_seconds: Optional[int] = None) -> bool:
+    db = await _adb()
+    update_data = {"recording_url": recording_url}
+    if duration_seconds is not None:
+        update_data["duration_seconds"] = duration_seconds
+    result = await db.table("call_logs").update(update_data).eq("id", call_id).execute()
+    return len(result.data or []) > 0
+
+
 async def get_contacts() -> list:
     db = await _adb()
     result = await db.table("call_logs").select("*").order("timestamp", desc=True).execute()
