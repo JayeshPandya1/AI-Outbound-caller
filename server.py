@@ -13,7 +13,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 _orig_ssl = ssl.create_default_context
@@ -385,6 +385,90 @@ async def api_get_contact_calls(phone: str = Query(...)):
     return {"data": await get_calls_by_phone(phone)}
 
 
+async def fetch_vobiz_recording_background(call_id: str, call_uuid: str, phone_clean: str, duration: Optional[int]):
+    # Wait 8 seconds to ensure Vobiz has finished processing and saving the recording
+    await asyncio.sleep(8)
+    try:
+        auth_id = await get_setting("VOBIZ_AUTH_ID") or os.getenv("VOBIZ_AUTH_ID")
+        auth_token = await get_setting("VOBIZ_AUTH_TOKEN") or os.getenv("VOBIZ_AUTH_TOKEN")
+        if not auth_id or not auth_token:
+            await log_error(
+                "vobiz_webhook_bg",
+                f"Cannot fetch recording for call {call_id}: VOBIZ_AUTH_ID or VOBIZ_AUTH_TOKEN not configured",
+                level="warning"
+            )
+            return
+
+        # Query Vobiz Recordings API
+        url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Recording/"
+        headers = {
+            "X-Auth-ID": auth_id,
+            "X-Auth-Token": auth_token,
+            "Accept": "application/json"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=15) as resp:
+                if resp.status != 200:
+                    resp_text = await resp.text()
+                    await log_error(
+                        "vobiz_webhook_bg",
+                        f"Failed to fetch Vobiz recordings: Status {resp.status}",
+                        detail=resp_text,
+                        level="error"
+                    )
+                    return
+                recordings = await resp.json()
+
+        # Iterate and match by call_uuid or sip_call_id
+        matched_rec = None
+        for r in recordings:
+            r_call_uuid = r.get("call_uuid") or r.get("CallUUID") or r.get("sip_call_id") or r.get("SIPCallID")
+            if r_call_uuid == call_uuid:
+                matched_rec = r
+                break
+
+        if not matched_rec:
+            await log_error(
+                "vobiz_webhook_bg",
+                f"No recording found matching call_uuid {call_uuid} in Vobiz database",
+                detail=json.dumps({"call_uuid": call_uuid, "recordings_found": len(recordings)}),
+                level="warning"
+            )
+            return
+
+        rec_url = matched_rec.get("recording_url") or matched_rec.get("recording") or matched_rec.get("audio_url")
+        if rec_url:
+            ok = await update_call_recording(call_id, rec_url, duration)
+            if ok:
+                await log_error(
+                    "vobiz_webhook_bg",
+                    f"Success: Located and saved recording for call {call_id} from Vobiz API",
+                    detail=f"Secure URL: {rec_url}",
+                    level="info"
+                )
+            else:
+                await log_error(
+                    "vobiz_webhook_bg",
+                    f"Failed to update call {call_id} with recording URL in database",
+                    level="error"
+                )
+        else:
+            await log_error(
+                "vobiz_webhook_bg",
+                "Matched Vobiz recording object missing recording_url field",
+                detail=json.dumps(matched_rec),
+                level="warning"
+            )
+
+    except Exception as bg_err:
+        await log_error(
+            "vobiz_webhook_bg",
+            f"Exception in background recording lookup: {bg_err}",
+            level="error"
+        )
+
+
 @app.post("/api/vobiz/webhook")
 async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
     # 1. Verify webhook secret key for security (if configured)
@@ -453,7 +537,7 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
         return None
 
     phone = get_val_case_insensitive(payload, ["destination_number", "to", "phone_number", "phone", "dest_number", "destination"])
-    rec_url = get_val_case_insensitive(payload, ["recording_url", "recording", "audio_url", "rec_url", "recording_link", "recordingurl"])
+    rec_url = get_val_case_insensitive(payload, ["recording_url", "recording", "audio_url", "rec_url", "recording_link", "recordingurl", "record_url"])
     duration = get_val_case_insensitive(payload, ["duration", "duration_seconds", "billsec", "duration_sec"])
 
     if duration:
@@ -540,13 +624,34 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
                 )
                 raise HTTPException(500, "Database update failed")
         else:
-            await log_error(
-                "vobiz_webhook",
-                f"Webhook ignored: Missing recording URL in payload",
-                detail=json.dumps(payload),
-                level="warning"
-            )
-            return {"status": "ignored", "reason": "missing recording URL in payload"}
+            # If recording url is missing from Hangup payload, check if we can query the Recording API in background
+            auth_id = await get_setting("VOBIZ_AUTH_ID") or os.getenv("VOBIZ_AUTH_ID")
+            auth_token = await get_setting("VOBIZ_AUTH_TOKEN") or os.getenv("VOBIZ_AUTH_TOKEN")
+            call_uuid = get_val_case_insensitive(payload, ["call_uuid", "calluuid", "sip_call_id", "sipcallid"])
+            
+            if auth_id and auth_token and call_uuid:
+                asyncio.create_task(
+                    fetch_vobiz_recording_background(call_id, call_uuid, phone_clean, duration)
+                )
+                await log_error(
+                    "vobiz_webhook",
+                    f"Call ended for {phone_clean}. Queued background recording API check.",
+                    detail=json.dumps({"call_uuid": call_uuid}),
+                    level="info"
+                )
+                return {
+                    "status": "queued_recording_lookup",
+                    "call_id": call_id,
+                    "call_uuid": call_uuid
+                }
+            else:
+                await log_error(
+                    "vobiz_webhook",
+                    "Webhook ignored: Missing recording URL in payload, and Vobiz API credentials or CallUUID is missing",
+                    detail=json.dumps(payload),
+                    level="warning"
+                )
+                return {"status": "ignored", "reason": "missing recording URL in payload and credentials"}
 
     except Exception as e:
         await log_error(
@@ -556,6 +661,43 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
             level="error"
         )
         raise HTTPException(500, str(e))
+
+
+@app.get("/api/vobiz/stream-recording")
+async def api_vobiz_stream_recording(url: str = Query(...)):
+    parsed_url = url.strip()
+    if not any(domain in parsed_url for domain in ["vobiz.ai", "vobiz.com"]):
+        raise HTTPException(400, "Forbidden: Only Vobiz recording URLs can be proxied")
+
+    auth_id = await get_setting("VOBIZ_AUTH_ID") or os.getenv("VOBIZ_AUTH_ID")
+    auth_token = await get_setting("VOBIZ_AUTH_TOKEN") or os.getenv("VOBIZ_AUTH_TOKEN")
+    if not auth_id or not auth_token:
+        raise HTTPException(400, "Vobiz API credentials are not configured on the server")
+
+    headers = {
+        "X-Auth-ID": auth_id,
+        "X-Auth-Token": auth_token
+    }
+
+    async def stream_generator():
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(parsed_url, headers=headers) as resp:
+                    if resp.status != 200:
+                        yield b"Failed to retrieve recording from Vobiz secure storage"
+                        return
+                    async for chunk, _ in resp.content.iter_chunks():
+                        yield chunk
+        except Exception as e:
+            logger.error("Error streaming Vobiz recording: %s", e)
+
+    content_type = "audio/mpeg"
+    if parsed_url.endswith(".wav"):
+        content_type = "audio/wav"
+    elif parsed_url.endswith(".ogg"):
+        content_type = "audio/ogg"
+
+    return StreamingResponse(stream_generator(), media_type=content_type)
 
 
 # ── Agent Profiles ────────────────────────────────────────────────────────────

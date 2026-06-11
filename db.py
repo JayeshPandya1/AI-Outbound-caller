@@ -25,6 +25,8 @@ DEFAULTS = {
     "SUPABASE_URL":            os.getenv("SUPABASE_URL", ""),
     "SUPABASE_SERVICE_KEY":    os.getenv("SUPABASE_SERVICE_KEY", ""),
     "DEEPGRAM_API_KEY":        os.getenv("DEEPGRAM_API_KEY", ""),
+    "VOBIZ_AUTH_ID":           os.getenv("VOBIZ_AUTH_ID", ""),
+    "VOBIZ_AUTH_TOKEN":        os.getenv("VOBIZ_AUTH_TOKEN", ""),
 }
 
 
@@ -40,7 +42,7 @@ SENSITIVE_KEYS = {
     "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "GOOGLE_API_KEY",
     "VOBIZ_PASSWORD", "TWILIO_AUTH_TOKEN", "SUPABASE_SERVICE_KEY",
     "AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY", "CALCOM_API_KEY",
-    "DEEPGRAM_API_KEY", "VOBIZ_WEBHOOK_SECRET",
+    "DEEPGRAM_API_KEY", "VOBIZ_WEBHOOK_SECRET", "VOBIZ_AUTH_TOKEN",
 }
 
 
@@ -69,7 +71,7 @@ def sync_dotenv_to_db() -> None:
             "DEEPGRAM_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
             "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
             "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
-            "ENABLED_TOOLS", "VOBIZ_WEBHOOK_SECRET",
+            "ENABLED_TOOLS", "VOBIZ_WEBHOOK_SECRET", "VOBIZ_AUTH_ID", "VOBIZ_AUTH_TOKEN",
         ]
         rows = []
         updated_at = datetime.now(timezone.utc).isoformat()
@@ -113,7 +115,7 @@ async def get_all_settings() -> dict:
         "DEEPGRAM_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
-        "ENABLED_TOOLS", "VOBIZ_WEBHOOK_SECRET",
+        "ENABLED_TOOLS", "VOBIZ_WEBHOOK_SECRET", "VOBIZ_AUTH_ID", "VOBIZ_AUTH_TOKEN",
     ]
     out: dict = {}
     for k in KNOWN_KEYS:
