@@ -40,7 +40,7 @@ SENSITIVE_KEYS = {
     "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "GOOGLE_API_KEY",
     "VOBIZ_PASSWORD", "TWILIO_AUTH_TOKEN", "SUPABASE_SERVICE_KEY",
     "AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY", "CALCOM_API_KEY",
-    "DEEPGRAM_API_KEY",
+    "DEEPGRAM_API_KEY", "VOBIZ_WEBHOOK_SECRET",
 }
 
 
@@ -69,7 +69,7 @@ def sync_dotenv_to_db() -> None:
             "DEEPGRAM_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
             "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
             "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
-            "ENABLED_TOOLS",
+            "ENABLED_TOOLS", "VOBIZ_WEBHOOK_SECRET",
         ]
         rows = []
         updated_at = datetime.now(timezone.utc).isoformat()
@@ -113,7 +113,7 @@ async def get_all_settings() -> dict:
         "DEEPGRAM_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
-        "ENABLED_TOOLS",
+        "ENABLED_TOOLS", "VOBIZ_WEBHOOK_SECRET",
     ]
     out: dict = {}
     for k in KNOWN_KEYS:
