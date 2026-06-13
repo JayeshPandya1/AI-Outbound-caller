@@ -323,6 +323,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ctx.room.on("disconnected", _on_room_disconnected)
             
             outbound_number = await get_setting("VOBIZ_OUTBOUND_NUMBER")
+            from datetime import timedelta
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
                     room_name=ctx.room.name,
@@ -330,6 +331,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     sip_call_to=phone_number,
                     sip_number=outbound_number,
                     participant_identity=_sip_identity,
+                    ringing_timeout=timedelta(seconds=30),
                     wait_until_answered=False,
                 )
             )
