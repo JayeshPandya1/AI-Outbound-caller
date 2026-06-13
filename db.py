@@ -513,3 +513,115 @@ async def set_default_agent_profile(profile_id: str) -> None:
     db = await _adb()
     await db.table("agent_profiles").update({"is_default": 0}).neq("id", "placeholder").execute()
     await db.table("agent_profiles").update({"is_default": 1}).eq("id", profile_id).execute()
+
+
+# ── Simple Authentication Helpers ──────────────────────────────────────────────
+
+import hashlib
+
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return f"{salt.hex()}:{key.hex()}"
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        salt_hex, key_hex = hashed.split(":")
+        salt = bytes.fromhex(salt_hex)
+        expected_key = bytes.fromhex(key_hex)
+        actual_key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+        return actual_key == expected_key
+    except Exception:
+        return False
+
+
+async def get_user_by_login_id(login_id: str) -> Optional[dict]:
+    db = await _adb()
+    res = await db.table("users").select("*").eq("login_id", login_id).execute()
+    return res.data[0] if res.data else None
+
+
+async def update_user(user_id: str, updates: dict) -> None:
+    db = await _adb()
+    await db.table("users").update(updates).eq("id", user_id).execute()
+
+
+async def create_user_session(user_id: str, session_token: str, user_agent: Optional[str], ip_address: Optional[str], duration_hours: int = 24) -> dict:
+    db = await _adb()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=duration_hours)).isoformat()
+    now_str = datetime.now(timezone.utc).isoformat()
+    session_id = str(uuid.uuid4())
+    row = {
+        "id": session_id,
+        "user_id": user_id,
+        "session_token": session_token,
+        "user_agent": user_agent,
+        "ip_address": ip_address,
+        "last_active": now_str,
+        "expires_at": expires_at,
+        "created_at": now_str
+    }
+    await db.table("user_sessions").insert(row).execute()
+    return row
+
+
+async def get_user_session(session_token: str) -> Optional[dict]:
+    db = await _adb()
+    now_str = datetime.now(timezone.utc).isoformat()
+    try:
+        res = await db.table("user_sessions").select("*, users(*)").eq("session_token", session_token).execute()
+        if not res.data:
+            return None
+        session = res.data[0]
+        # Check expiry
+        if session["expires_at"] < now_str:
+            await delete_user_session(session_token)
+            return None
+        
+        # Update last active
+        await db.table("user_sessions").update({"last_active": now_str}).eq("session_token", session_token).execute()
+        return session
+    except Exception as exc:
+        print(f"WARNING: get_user_session failed: {exc}")
+        return None
+
+
+async def delete_user_session(session_token: str) -> None:
+    db = await _adb()
+    await db.table("user_sessions").delete().eq("session_token", session_token).execute()
+
+
+async def get_all_active_sessions_for_user(user_id: str) -> list:
+    db = await _adb()
+    try:
+        res = await db.table("user_sessions").select("*").eq("user_id", user_id).order("last_active", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+async def delete_user_session_by_id(session_id: str) -> None:
+    db = await _adb()
+    await db.table("user_sessions").delete().eq("id", session_id).execute()
+
+
+async def ensure_default_user() -> None:
+    db = await _adb()
+    try:
+        res = await db.table("users").select("id").limit(1).execute()
+        if not res.data:
+            admin_id = os.getenv("ADMIN_LOGIN_ID", "admin")
+            admin_pass = os.getenv("ADMIN_PASSWORD", "admin123!")
+            hashed_pw = hash_password(admin_pass)
+            await db.table("users").insert({
+                "id": str(uuid.uuid4()),
+                "login_id": admin_id,
+                "password_hash": hashed_pw,
+                "is_active": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).execute()
+            print(f"Created default admin user: {admin_id}")
+    except Exception as exc:
+        print(f"WARNING: ensure_default_user failed: {exc}. Run Supabase script.")

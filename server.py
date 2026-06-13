@@ -31,6 +31,9 @@ from db import (
     get_contacts, get_errors, get_logs, get_setting, get_stats, init_db, log_error,
     save_settings, set_setting, update_call_notes, update_call_recording, update_campaign_run_stats, update_campaign_status,
     delete_campaign,
+    ensure_default_user, get_user_by_login_id, verify_password, create_user_session,
+    get_user_session, delete_user_session, get_all_active_sessions_for_user,
+    delete_user_session_by_id, update_user
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
 
@@ -61,8 +64,38 @@ app.add_middleware(
 )
 
 
+# ── Authentication Middleware ──────────────────────────────────────────────────
+
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next):
+    exempt_paths = [
+        "/login",
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/api/auth/session",
+        "/api/vobiz/webhook",
+    ]
+    
+    path = request.url.path
+    if path.startswith("/api/") and path not in exempt_paths:
+        session_id = request.cookies.get("session_id")
+        if not session_id:
+            return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+        
+        session = await get_user_session(session_id)
+        if not session or not session.get("users") or not session["users"].get("is_active"):
+            return JSONResponse(status_code=401, content={"detail": "Session expired or invalid"})
+        
+        request.state.user = session["users"]
+        request.state.session_id = session_id
+        
+    response = await call_next(request)
+    return response
+
+
 @app.on_event("startup")
 async def _startup():
+    await ensure_default_user()
     if _scheduler:
         _scheduler.start()
         await _reschedule_all_campaigns()
@@ -125,14 +158,178 @@ class StatusRequest(BaseModel):
     status: str
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
+# ── Dashboard & Authentication ──────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(req: LoginRequest, request: Request):
+    username = req.username.strip()
+    password = req.password
+    
+    user = await get_user_by_login_id(username)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid username or password.")
+    
+    from datetime import datetime, timezone
+    if user.get("locked_until"):
+        locked_until = datetime.fromisoformat(user["locked_until"].replace("Z", "+00:00"))
+        if locked_until > datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Account is temporarily locked. Please try again in 15 minutes.")
+    
+    is_valid = verify_password(password, user["password_hash"])
+    if not is_valid:
+        failed_count = user.get("failed_login_count", 0) + 1
+        updates = {"failed_login_count": failed_count}
+        if failed_count >= 5:
+            from datetime import timedelta
+            locked_until = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+            updates["locked_until"] = locked_until
+            await update_user(user["id"], updates)
+            raise HTTPException(status_code=400, detail="Account is temporarily locked due to too many failed attempts.")
+        else:
+            await update_user(user["id"], updates)
+            raise HTTPException(status_code=400, detail="Invalid username or password.")
+            
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=400, detail="Account is inactive. Contact administrator.")
+        
+    await update_user(user["id"], {
+        "failed_login_count": 0,
+        "locked_until": None,
+        "last_login_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    import secrets
+    session_token = secrets.token_hex(32)
+    user_agent = request.headers.get("user-agent")
+    ip_address = request.client.host if request.client else None
+    
+    await create_user_session(
+        user_id=user["id"],
+        session_token=session_token,
+        user_agent=user_agent,
+        ip_address=ip_address
+    )
+    
+    response = JSONResponse(content={"status": "success", "username": user["login_id"]})
+    response.set_cookie(
+        key="session_id",
+        value=session_token,
+        httponly=True,
+        max_age=86400,  # 24 hours
+        samesite="lax",
+        secure=False  # Set to True over HTTPS in production
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(request: Request):
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        await delete_user_session(session_id)
+        
+    response = JSONResponse(content={"status": "success"})
+    response.delete_cookie(key="session_id")
+    return response
+
+
+@app.get("/api/auth/session")
+async def api_auth_session(request: Request):
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    session = await get_user_session(session_id)
+    if not session or not session.get("users") or not session["users"].get("is_active"):
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+    return {
+        "authenticated": True,
+        "username": session["users"]["login_id"]
+    }
+
+
+@app.get("/api/auth/sessions")
+async def api_auth_get_sessions(request: Request):
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    session = await get_user_session(session_id)
+    if not session or not session.get("users") or not session["users"].get("is_active"):
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+        
+    user_id = session["users"]["id"]
+    sessions = await get_all_active_sessions_for_user(user_id)
+    
+    formatted_sessions = []
+    for s in sessions:
+        formatted_sessions.append({
+            "id": s["id"],
+            "device": s["user_agent"] or "Unknown Device",
+            "ip": s["ip_address"] or "Unknown IP",
+            "lastActive": "Active now" if s["session_token"] == session_id else s["last_active"],
+            "current": s["session_token"] == session_id
+        })
+    return formatted_sessions
+
+
+@app.delete("/api/auth/sessions/{session_db_id}")
+async def api_auth_revoke_session(session_db_id: str, request: Request):
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    session = await get_user_session(session_id)
+    if not session or not session.get("users") or not session["users"].get("is_active"):
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+        
+    user_id = session["users"]["id"]
+    user_sessions = await get_all_active_sessions_for_user(user_id)
+    session_ids = [s["id"] for s in user_sessions]
+    
+    if session_db_id in session_ids:
+        await delete_user_session_by_id(session_db_id)
+        return {"status": "success", "message": "Session revoked."}
+    else:
+        raise HTTPException(status_code=404, detail="Session not found or unauthorized.")
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def serve_login(request: Request):
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        session = await get_user_session(session_id)
+        if session and session.get("users") and session["users"].get("is_active"):
+            return HTMLResponse(content="<script>window.location.href='/';</script>")
+            
+    login_path = Path(__file__).parent / "ui" / "login.html"
+    if login_path.exists():
+        return HTMLResponse(content=login_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Login Page not found — place login.html in ui/</h1>", status_code=404)
+
 
 @app.get("/", response_class=HTMLResponse)
-async def serve_dashboard():
-    html_path = Path(__file__).parent / "ui" / "index.html"
-    if html_path.exists():
-        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>Dashboard not found — place index.html in ui/</h1>", status_code=404)
+async def serve_dashboard(request: Request):
+    session_id = request.cookies.get("session_id")
+    is_authenticated = False
+    if session_id:
+        session = await get_user_session(session_id)
+        if session and session.get("users") and session["users"].get("is_active"):
+            is_authenticated = True
+            
+    if is_authenticated:
+        html_path = Path(__file__).parent / "ui" / "index.html"
+        if html_path.exists():
+            return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+        return HTMLResponse("<h1>Dashboard not found — place index.html in ui/</h1>", status_code=404)
+    else:
+        # Serve login page directly at "/" when unauthenticated
+        login_path = Path(__file__).parent / "ui" / "login.html"
+        if login_path.exists():
+            return HTMLResponse(content=login_path.read_text(encoding="utf-8"))
+        return HTMLResponse("<h1>Login Page not found — place login.html in ui/</h1>", status_code=404)
 
 
 # ── Call dispatch ─────────────────────────────────────────────────────────────

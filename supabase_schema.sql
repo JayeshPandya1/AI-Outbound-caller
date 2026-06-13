@@ -86,3 +86,31 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
     created_at TEXT NOT NULL
 );
 ALTER TABLE agent_profiles DISABLE ROW LEVEL SECURITY;
+
+-- ── Simple Authentication Tables ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    login_id TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT true NOT NULL,
+    failed_login_count INTEGER DEFAULT 0 NOT NULL,
+    locked_until TIMESTAMP WITH TIME ZONE,
+    last_login_at TIMESTAMP WITH TIME ZONE,
+    must_reset_password BOOLEAN DEFAULT false NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+ALTER TABLE users DISABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    session_token TEXT UNIQUE NOT NULL,
+    user_agent TEXT,
+    ip_address TEXT,
+    last_active TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+ALTER TABLE user_sessions DISABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(session_token);
