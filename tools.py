@@ -56,10 +56,13 @@ class AppointmentTools(llm.ToolContext):
         date format: YYYY-MM-DD  |  time format: HH:MM (24-hour)
         Returns 'available' or 'unavailable: next available slot is <slot>'.
         """
+        t0 = time.time()
         try:
             if await check_slot(date, time):
+                logger.info(f"[LATENCY AUDIT] check_availability execution took {time.time() - t0:.2f}s")
                 return "available"
             next_slot = await get_next_available(date, time)
+            logger.info(f"[LATENCY AUDIT] check_availability execution took {time.time() - t0:.2f}s")
             return f"unavailable: next available slot is {next_slot}"
         except Exception as exc:
             return "Unable to check availability right now — please suggest a date and I will confirm."
@@ -71,8 +74,10 @@ class AppointmentTools(llm.ToolContext):
         Call ONLY after the lead confirms all details.
         name: lead's full name | phone: with country code | date: YYYY-MM-DD | time: HH:MM | service: type
         """
+        t0 = time.time()
         try:
             booking_id = await insert_appointment(name, phone, date, time, service)
+            logger.info(f"[LATENCY AUDIT] book_appointment execution took {time.time() - t0:.2f}s")
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
         except Exception as exc:
             return "Technical issue saving the booking. Our team will confirm shortly."
@@ -171,10 +176,14 @@ class AppointmentTools(llm.ToolContext):
         phone: the lead's phone number with country code
         Returns call history, appointments, and remembered details.
         """
+        t0 = time.time()
         try:
-            calls = await get_calls_by_phone(phone)
-            appointments = await get_appointments_by_phone(phone)
-            memories = await get_contact_memory(phone)
+            calls, appointments, memories = await asyncio.gather(
+                get_calls_by_phone(phone),
+                get_appointments_by_phone(phone),
+                get_contact_memory(phone)
+            )
+            logger.info(f"[LATENCY AUDIT] lookup_contact execution took {time.time() - t0:.2f}s")
             if not calls and not appointments and not memories:
                 return f"No history for {phone}. First-time contact."
             lines = [f"Contact history for {phone}:"]

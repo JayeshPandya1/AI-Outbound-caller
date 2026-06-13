@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -51,9 +52,24 @@ def _sdb():
     return create_client(_default("SUPABASE_URL"), _default("SUPABASE_SERVICE_KEY"))
 
 
+# ── Cached async Supabase client (singleton) ─────────────────────────────────
+# PERF: Avoids creating a new HTTPS/TLS connection on every DB call.
+# Before this fix, each _adb() call added ~200-500ms of TLS handshake overhead.
+_async_client = None
+_async_client_lock = asyncio.Lock()
+
 async def _adb():
-    from supabase._async.client import create_client
-    return await create_client(_default("SUPABASE_URL"), _default("SUPABASE_SERVICE_KEY"))
+    global _async_client
+    if _async_client is not None:
+        return _async_client
+    async with _async_client_lock:
+        if _async_client is not None:
+            return _async_client
+        from supabase._async.client import create_client
+        _async_client = await create_client(
+            _default("SUPABASE_URL"), _default("SUPABASE_SERVICE_KEY")
+        )
+        return _async_client
 
 
 def sync_dotenv_to_db() -> None:

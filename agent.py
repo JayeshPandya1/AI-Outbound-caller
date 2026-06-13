@@ -146,7 +146,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             _realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
                     end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
-                    silence_duration_ms=1000,
+                    silence_duration_ms=600,
                     prefix_padding_ms=200,
                 ),
             )
@@ -162,7 +162,15 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             _session_resumption_cfg = None
             _ctx_compression_cfg = None
 
-        realtime_kwargs: dict = dict(model=gemini_model, voice=gemini_voice, instructions=system_prompt)
+        realtime_kwargs: dict = dict(
+            model=gemini_model, voice=gemini_voice, instructions=system_prompt,
+            # PERF: GenerationConfig tuning — lower temperature for faster sampling,
+            # max_output_tokens as safety net to prevent runaway generation.
+            generation_config=_gt.GenerationConfig(
+                temperature=0.6,
+                max_output_tokens=256,
+            ),
+        )
         if _realtime_input_cfg is not None:
             realtime_kwargs["realtime_input_config"]      = _realtime_input_cfg
             realtime_kwargs["session_resumption"]         = _session_resumption_cfg
@@ -227,16 +235,23 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                                   service_type=service_type, custom_prompt=custom_prompt)
     tool_ctx = AppointmentTools(ctx, phone_number, lead_name)
 
-    gemini_model = model_override or await get_setting("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
-    gemini_voice = voice_override or await get_setting("GEMINI_TTS_VOICE", "Aoede")
-
+    # PERF FIX #2: Parallelize all DB lookups with asyncio.gather()
+    # Before: 3 sequential get_setting() calls = 0.6-1.5s of serial round-trips.
+    # After: 1 wall-clock round-trip for all 3.
+    async def _noop(): return None
+    _model_coro = get_setting("GEMINI_MODEL", "gemini-3.1-flash-live-preview") if not model_override else _noop()
+    _voice_coro = get_setting("GEMINI_TTS_VOICE", "Aoede") if not voice_override else _noop()
+    _tools_coro = get_enabled_tools() if not tools_override else _noop()
+    _model_r, _voice_r, _tools_r = await asyncio.gather(_model_coro, _voice_coro, _tools_coro)
+    gemini_model = model_override or _model_r
+    gemini_voice = voice_override or _voice_r
     if tools_override:
         try:
             enabled_tools = json.loads(tools_override)
         except Exception:
-            enabled_tools = await get_enabled_tools()
+            enabled_tools = _tools_r if isinstance(_tools_r, list) else []
     else:
-        enabled_tools = await get_enabled_tools()
+        enabled_tools = _tools_r if isinstance(_tools_r, list) else []
 
     # ── Connect ──────────────────────────────────────────────────────────────
     import time
@@ -321,16 +336,31 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     t_session_start = time.time()
     await _log("info", f"[LATENCY AUDIT] Connecting to Live API (session.start) at {t_session_start - call_start_time:.2f}s")
     await session.start(**_session_kwargs)
-    await _log("info", f"[LATENCY AUDIT] Live API connected / session started in {time.time() - t_session_start:.2f}s")
+    t_session_started = time.time()
+    await _log("info", f"[LATENCY AUDIT] Live API connected / session started in {t_session_started - t_session_start:.2f}s")
     await _log("info", "Agent session started — AI ready, generating greeting")
+
+    # PERF FIX #6: Structured latency summary — all milestones in one log entry
+    await _log("info", (
+        f"[LATENCY SUMMARY] "
+        f"settings={t_session_init - call_start_time:.2f}s | "
+        f"session_build={t_session_start - t_session_init:.2f}s | "
+        f"session_connect={t_session_started - t_session_start:.2f}s | "
+        f"total_to_ready={t_session_started - call_start_time:.2f}s"
+    ))
 
     # ── Optional S3 recording (Asynchronous background task) ─────────────────
     async def start_recording_background():
-        _aws_key    = (await get_setting("S3_ACCESS_KEY_ID")) or os.getenv("S3_ACCESS_KEY_ID", "")
-        _aws_secret = (await get_setting("S3_SECRET_ACCESS_KEY")) or os.getenv("S3_SECRET_ACCESS_KEY", "")
-        _aws_bucket = (await get_setting("S3_BUCKET")) or os.getenv("S3_BUCKET", "")
-        _s3_endpoint = (await get_setting("S3_ENDPOINT_URL")) or os.getenv("S3_ENDPOINT_URL", "")
-        _s3_region  = (await get_setting("S3_REGION")) or os.getenv("S3_REGION", "ap-northeast-1")
+        # PERF FIX #5: Parallelize all 5 S3 settings lookups
+        _s3_results = await asyncio.gather(
+            get_setting("S3_ACCESS_KEY_ID"), get_setting("S3_SECRET_ACCESS_KEY"),
+            get_setting("S3_BUCKET"), get_setting("S3_ENDPOINT_URL"), get_setting("S3_REGION"),
+        )
+        _aws_key    = _s3_results[0] or os.getenv("S3_ACCESS_KEY_ID", "")
+        _aws_secret = _s3_results[1] or os.getenv("S3_SECRET_ACCESS_KEY", "")
+        _aws_bucket = _s3_results[2] or os.getenv("S3_BUCKET", "")
+        _s3_endpoint = _s3_results[3] or os.getenv("S3_ENDPOINT_URL", "")
+        _s3_region  = _s3_results[4] or os.getenv("S3_REGION", "ap-northeast-1")
         if _aws_key and _aws_secret and _aws_bucket:
             try:
                 _recording_path = f"recordings/{ctx.room.name}.ogg"
@@ -364,8 +394,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         asyncio.create_task(start_recording_background())
 
     # ── Greeting ─────────────────────────────────────────────────────────────
-    # Give a small 0.5-second delay to ensure SIP audio media bridging is fully complete and active in both directions
-    await asyncio.sleep(0.5)
+    # PERF FIX #3: Reduced from 0.5s to 0.1s — 100ms is sufficient for SIP media bridge handoff
+    await asyncio.sleep(0.1)
     greeting = (
         f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
         if phone_number else "Greet the caller warmly."

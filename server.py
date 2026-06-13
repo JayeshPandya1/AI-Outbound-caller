@@ -8,6 +8,7 @@ import random
 import ssl
 import certifi
 import aiohttp
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -336,30 +337,15 @@ async def serve_dashboard(request: Request):
 
 @app.post("/api/call")
 async def api_dispatch_call(req: CallRequest):
-    url    = await eff("LIVEKIT_URL")
-    key    = await eff("LIVEKIT_API_KEY")
-    secret = await eff("LIVEKIT_API_SECRET")
+    t0 = time.time()
+    url, key, secret = await asyncio.gather(
+        eff("LIVEKIT_URL"),
+        eff("LIVEKIT_API_KEY"),
+        eff("LIVEKIT_API_SECRET")
+    )
 
     if not all([url, key, secret]):
         raise HTTPException(400, "LiveKit credentials not configured. Go to Settings → LiveKit.")
-
-    # Prevent concurrent active calls
-    try:
-        from livekit import api as lk_api
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx)) as session:
-            lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
-            rooms_res = await lk.room.list_rooms(lk_api.ListRoomsRequest())
-            active_calls = [r for r in rooms_res.rooms if r.name.startswith("call-") or r.name.startswith("camp-")]
-            await lk.aclose()
-            if active_calls:
-                raise HTTPException(400, "A call is currently in progress. Please wait for the current call to finish.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("Failed to check active rooms (proceeding anyway): %s", e)
 
     phone = req.phone.strip()
     if not phone.startswith("+"):
@@ -399,18 +385,31 @@ async def api_dispatch_call(req: CallRequest):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
-        lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
-        await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
-        await lk.agent_dispatch.create_dispatch(
-            lk_api.CreateAgentDispatchRequest(
-                agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
+        
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx)) as session:
+            lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+            
+            # 1. Prevent concurrent active calls
+            rooms_res = await lk.room.list_rooms(lk_api.ListRoomsRequest())
+            active_calls = [r for r in rooms_res.rooms if r.name.startswith("call-") or r.name.startswith("camp-")]
+            if active_calls:
+                await lk.aclose()
+                raise HTTPException(400, "A call is currently in progress. Please wait for the current call to finish.")
+                
+            # 2. Create room and dispatch
+            await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
+            await lk.agent_dispatch.create_dispatch(
+                lk_api.CreateAgentDispatchRequest(
+                    agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
+                )
             )
-        )
-        await lk.aclose()
-        await session.close()
+            await lk.aclose()
+            
+        logger.info(f"[LATENCY AUDIT] Call dispatch completed in {time.time() - t0:.2f}s for {phone}")
         await log_error("server", f"Call dispatched to {phone}", f"room={room_name}", "info")
         return {"status": "dispatched", "room": room_name, "phone": phone}
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Dispatch error: %s", exc)
         raise HTTPException(500, f"Dispatch failed: {exc}")
