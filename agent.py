@@ -270,15 +270,37 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         try:
             t_dial_start = time.time()
             await _log("info", f"[LATENCY AUDIT] Outbound call initiated to {phone_number} at {t_dial_start - call_start_time:.2f}s")
+            
+            _sip_identity = f"sip_{phone_number}"
+            _answered_event = asyncio.Event()
+
+            def _on_participant_connected(participant: rtc.RemoteParticipant):
+                if participant.identity == _sip_identity:
+                    _answered_event.set()
+
+            ctx.room.on("participant_connected", _on_participant_connected)
+            
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
                     room_name=ctx.room.name,
                     sip_trunk_id=trunk_id,
                     sip_call_to=phone_number,
-                    participant_identity=f"sip_{phone_number}",
-                    wait_until_answered=True,
+                    participant_identity=_sip_identity,
+                    wait_until_answered=False,
                 )
             )
+            
+            # Check if they connected instantly before we even waited
+            if _sip_identity in [p.identity for p in ctx.room.remote_participants.values()]:
+                _answered_event.set()
+
+            try:
+                await asyncio.wait_for(_answered_event.wait(), timeout=60.0)
+            except asyncio.TimeoutError:
+                raise TimeoutError("Timeout waiting for callee to answer")
+            finally:
+                ctx.room.off("participant_connected", _on_participant_connected)
+
             await _log("info", f"[LATENCY AUDIT] Callee answered. Ringing/pickup duration: {time.time() - t_dial_start:.2f}s")
         except Exception as exc:
             await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
