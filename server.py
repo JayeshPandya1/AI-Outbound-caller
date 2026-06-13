@@ -903,7 +903,7 @@ async def api_vobiz_webhook(req: Request, secret: Optional[str] = Query(None)):
 
 
 @app.get("/api/vobiz/stream-recording")
-async def api_vobiz_stream_recording(url: str = Query(...)):
+async def api_vobiz_stream_recording(request: Request, url: str = Query(...)):
     parsed_url = url.strip()
     if not any(domain in parsed_url for domain in ["vobiz.ai", "vobiz.com"]):
         raise HTTPException(400, "Forbidden: Only Vobiz recording URLs can be proxied")
@@ -918,25 +918,52 @@ async def api_vobiz_stream_recording(url: str = Query(...)):
         "X-Auth-Token": auth_token
     }
 
-    async def stream_generator():
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(parsed_url, headers=headers) as resp:
-                    if resp.status != 200:
-                        yield b"Failed to retrieve recording from Vobiz secure storage"
-                        return
-                    async for chunk, _ in resp.content.iter_chunks():
-                        yield chunk
-        except Exception as e:
-            logger.error("Error streaming Vobiz recording: %s", e)
+    # Forward the Range header if requested by client (e.g. iOS Safari)
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if range_header:
+        headers["Range"] = range_header
 
-    content_type = "audio/mpeg"
-    if parsed_url.endswith(".wav"):
-        content_type = "audio/wav"
-    elif parsed_url.endswith(".ogg"):
-        content_type = "audio/ogg"
+    try:
+        session = aiohttp.ClientSession()
+        resp = await session.get(parsed_url, headers=headers)
+        status_code = resp.status
+        
+        # Extract response headers to forward range/seek info to browser
+        response_headers = {
+            "Accept-Ranges": resp.headers.get("Accept-Ranges") or "bytes"
+        }
+        if resp.headers.get("Content-Range"):
+            response_headers["Content-Range"] = resp.headers.get("Content-Range")
+        if resp.headers.get("Content-Length"):
+            response_headers["Content-Length"] = resp.headers.get("Content-Length")
+            
+        content_type = resp.headers.get("Content-Type") or "audio/mpeg"
+        if parsed_url.endswith(".wav"):
+            content_type = "audio/wav"
+        elif parsed_url.endswith(".ogg"):
+            content_type = "audio/ogg"
 
-    return StreamingResponse(stream_generator(), media_type=content_type)
+        async def stream_generator():
+            try:
+                if status_code >= 400:
+                    yield b"Failed to retrieve recording from Vobiz secure storage"
+                    return
+                async for chunk, _ in resp.content.iter_chunks():
+                    yield chunk
+            finally:
+                resp.close()
+                await session.close()
+
+        return StreamingResponse(
+            stream_generator(),
+            status_code=status_code,
+            headers=response_headers,
+            media_type=content_type
+        )
+    except Exception as e:
+        logger.error("Error setting up Vobiz recording stream proxy: %s", e)
+        raise HTTPException(500, f"Error starting recording stream: {e}")
+
 
 
 # ── Agent Profiles ────────────────────────────────────────────────────────────
