@@ -57,8 +57,13 @@ async def main():
         # Also persist to Supabase settings
         try:
             from supabase import create_client
+            from datetime import datetime, timezone
             sb = create_client(os.getenv("SUPABASE_URL",""), os.getenv("SUPABASE_SERVICE_KEY",""))
-            sb.table("settings").upsert({"key": "OUTBOUND_TRUNK_ID", "value": trunk_id}, on_conflict="key").execute()
+            sb.table("settings").upsert({
+                "key": "OUTBOUND_TRUNK_ID",
+                "value": trunk_id,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }, on_conflict="key").execute()
             print("Also saved to Supabase settings table.")
         except Exception as e:
             print(f"Could not save to Supabase: {e}")
