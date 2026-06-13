@@ -164,12 +164,10 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
 
         realtime_kwargs: dict = dict(
             model=gemini_model, voice=gemini_voice, instructions=system_prompt,
-            # PERF: GenerationConfig tuning — lower temperature for faster sampling,
+            # PERF: Tuning — lower temperature for faster sampling,
             # max_output_tokens as safety net to prevent runaway generation.
-            generation_config=_gt.GenerationConfig(
-                temperature=0.6,
-                max_output_tokens=256,
-            ),
+            temperature=0.6,
+            max_output_tokens=256,
         )
         if _realtime_input_cfg is not None:
             realtime_kwargs["realtime_input_config"]      = _realtime_input_cfg
@@ -274,11 +272,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             _sip_identity = f"sip_{phone_number}"
             _answered_event = asyncio.Event()
 
-            def _on_participant_connected(participant: rtc.RemoteParticipant):
+            def _on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
                 if participant.identity == _sip_identity:
                     _answered_event.set()
 
-            ctx.room.on("participant_connected", _on_participant_connected)
+            ctx.room.on("track_subscribed", _on_track_subscribed)
             
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
@@ -290,16 +288,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 )
             )
             
-            # Check if they connected instantly before we even waited
-            if _sip_identity in [p.identity for p in ctx.room.remote_participants.values()]:
-                _answered_event.set()
+            # Check if they connected and published a track instantly
+            for p in ctx.room.remote_participants.values():
+                if p.identity == _sip_identity and len(p.track_publications) > 0:
+                    _answered_event.set()
 
             try:
                 await asyncio.wait_for(_answered_event.wait(), timeout=60.0)
             except asyncio.TimeoutError:
                 raise TimeoutError("Timeout waiting for callee to answer")
             finally:
-                ctx.room.off("participant_connected", _on_participant_connected)
+                ctx.room.off("track_subscribed", _on_track_subscribed)
 
             await _log("info", f"[LATENCY AUDIT] Callee answered. Ringing/pickup duration: {time.time() - t_dial_start:.2f}s")
         except Exception as exc:
@@ -430,7 +429,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             
             # Bypasses the mutable_chat_context blocks in the plugin by sending the Content trigger directly
             turns = [
-                _gt.Content(parts=[_gt.Part(text=greeting)], role="user")
+                _gt.Content(parts=[_gt.Part(text=greeting)], role="model"),
+                _gt.Content(parts=[_gt.Part(text=".")], role="user")
             ]
             rt_session = session._activity.realtime_llm_session
             if rt_session is not None:
