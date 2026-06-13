@@ -298,10 +298,11 @@ async def get_appointments_by_phone(phone: str) -> list:
 async def log_call(
     phone_number: str, lead_name: Optional[str], outcome: str, reason: str,
     duration_seconds: int, recording_url: Optional[str] = None, notes: Optional[str] = None,
-) -> None:
+) -> str:
     db = await _adb()
+    call_id = str(uuid.uuid4())
     row: dict = {
-        "id": str(uuid.uuid4()), "phone_number": phone_number, "lead_name": lead_name,
+        "id": call_id, "phone_number": phone_number, "lead_name": lead_name,
         "outcome": outcome, "reason": reason, "duration_seconds": duration_seconds,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -310,6 +311,17 @@ async def log_call(
     if notes:
         row["notes"] = notes
     await db.table("call_logs").insert(row).execute()
+    return call_id
+
+
+async def update_call_outcome(call_id: str, outcome: str, reason: str, duration_seconds: int) -> bool:
+    db = await _adb()
+    result = await db.table("call_logs").update({
+        "outcome": outcome,
+        "reason": reason,
+        "duration_seconds": duration_seconds
+    }).eq("id", call_id).execute()
+    return len(result.data or []) > 0
 
 
 async def get_all_calls(page: int = 1, limit: int = 20) -> list:

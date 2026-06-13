@@ -35,7 +35,7 @@ except ImportError:
 from livekit.plugins import noise_cancellation
 from google.genai import types as _gt
 
-from db import init_db, log_error, get_enabled_tools, get_setting
+from db import init_db, log_error, get_enabled_tools, get_setting, log_call, update_call_outcome
 from prompts import build_prompt
 from tools import AppointmentTools
 
@@ -229,9 +229,23 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     await _log("info", f"Call job received — phone={phone_number} lead={lead_name} biz={business_name}")
 
+    call_db_id = None
+    if phone_number:
+        try:
+            call_db_id = await log_call(
+                phone_number=phone_number,
+                lead_name=lead_name,
+                outcome="initiated",
+                reason="Call job received, preparing to dial",
+                duration_seconds=0
+            )
+            logger.info(f"Initialized call log in Supabase with ID: {call_db_id}")
+        except Exception as log_exc:
+            logger.error("Failed to initialize call log: %s", log_exc)
+
     system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
                                   service_type=service_type, custom_prompt=custom_prompt)
-    tool_ctx = AppointmentTools(ctx, phone_number, lead_name)
+    tool_ctx = AppointmentTools(ctx, phone_number, lead_name, call_db_id=call_db_id)
 
     # PERF FIX #2: Parallelize all DB lookups with asyncio.gather()
     # Before: 3 sequential get_setting() calls = 0.6-1.5s of serial round-trips.
@@ -271,6 +285,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             
             _sip_identity = f"sip_{phone_number}"
             _answered_event = asyncio.Event()
+            _failed_event = asyncio.Event()
+            _fail_reason = "Call terminated before answer"
 
             def _on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
                 if participant.identity == _sip_identity:
@@ -285,9 +301,26 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     logger.info(f"Attributes changed for {participant.identity}. Status: {status}, Attributes: {participant.attributes}")
                     if status == "active":
                         _answered_event.set()
+                    elif status == "hangup":
+                        nonlocal _fail_reason
+                        _fail_reason = "SIP call refused/rejected (hangup status)"
+                        _failed_event.set()
+
+            def _on_participant_disconnected(participant: rtc.RemoteParticipant):
+                if participant.identity == _sip_identity:
+                    nonlocal _fail_reason
+                    _fail_reason = "SIP participant disconnected before answering"
+                    _failed_event.set()
+
+            def _on_room_disconnected():
+                nonlocal _fail_reason
+                _fail_reason = "LiveKit room disconnected before answering"
+                _failed_event.set()
 
             ctx.room.on("track_subscribed", _on_track_subscribed)
             ctx.room.on("participant_attributes_changed", _on_attributes_changed)
+            ctx.room.on("participant_disconnected", _on_participant_disconnected)
+            ctx.room.on("disconnected", _on_room_disconnected)
             
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
@@ -307,28 +340,46 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         _answered_event.set()
 
             try:
-                await asyncio.wait_for(_answered_event.wait(), timeout=60.0)
+                async def _wait_loop():
+                    while not _answered_event.is_set() and not _failed_event.is_set():
+                        await asyncio.sleep(0.1)
+
+                await asyncio.wait_for(_wait_loop(), timeout=60.0)
+                if _failed_event.is_set():
+                    raise RuntimeError(_fail_reason)
             except asyncio.TimeoutError:
                 raise TimeoutError("Timeout waiting for callee to answer")
             finally:
                 ctx.room.off("track_subscribed", _on_track_subscribed)
                 ctx.room.off("participant_attributes_changed", _on_attributes_changed)
+                ctx.room.off("participant_disconnected", _on_participant_disconnected)
+                ctx.room.off("disconnected", _on_room_disconnected)
 
             await _log("info", f"[LATENCY AUDIT] Callee answered. Ringing/pickup duration: {time.time() - t_dial_start:.2f}s")
-        except Exception as exc:
+        except (Exception, BaseException) as exc:
             await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
             try:
-                from db import log_call
-                await log_call(
-                    phone_number=phone_number,
-                    lead_name=lead_name,
-                    outcome="no_answer",
-                    reason=f"SIP dial failed: {str(exc)}",
-                    duration_seconds=0
-                )
+                reason_str = f"SIP dial failed: {str(exc)}" if str(exc) else f"SIP dial failed: {type(exc).__name__}"
+                if call_db_id:
+                    await update_call_outcome(
+                        call_id=call_db_id,
+                        outcome="no_answer",
+                        reason=reason_str,
+                        duration_seconds=0
+                    )
+                else:
+                    await log_call(
+                        phone_number=phone_number,
+                        lead_name=lead_name,
+                        outcome="no_answer",
+                        reason=reason_str,
+                        duration_seconds=0
+                    )
             except Exception as log_exc:
                 logger.error("Failed to log failed SIP dial: %s", log_exc)
             ctx.shutdown()
+            if isinstance(exc, BaseException) and not isinstance(exc, Exception):
+                raise exc
             return
         await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")
         tool_ctx._call_start_time = time.time()
@@ -487,12 +538,28 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         await _log("info", f"SIP participant disconnected — ending session for {phone_number}")
         await session.aclose()
         if getattr(tool_ctx, "call_active", True):
-            from db import log_call
             duration = int(time.time() - tool_ctx._call_start_time)
-            await log_call(
-                phone_number, lead_name, "dropped", "Lead hung up before completion",
-                duration, getattr(tool_ctx, "recording_url", None)
-            )
+            if call_db_id:
+                try:
+                    from db import update_call_recording
+                    await update_call_outcome(call_db_id, "dropped", "Lead hung up before completion", duration)
+                    rec_url = getattr(tool_ctx, "recording_url", None)
+                    if rec_url:
+                        await update_call_recording(call_db_id, rec_url)
+                except Exception as log_exc:
+                    logger.error("Failed to update call log on drop: %s", log_exc)
+            else:
+                try:
+                    await log_call(
+                        phone_number=phone_number,
+                        lead_name=lead_name,
+                        outcome="dropped",
+                        reason="Lead hung up before completion",
+                        duration_seconds=duration,
+                        recording_url=getattr(tool_ctx, "recording_url", None)
+                    )
+                except Exception as log_exc:
+                    logger.error("Failed to log call drop: %s", log_exc)
     else:
         _done = asyncio.Event()
         ctx.room.on("disconnected", lambda: _done.set())
