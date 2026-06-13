@@ -322,11 +322,13 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             ctx.room.on("participant_disconnected", _on_participant_disconnected)
             ctx.room.on("disconnected", _on_room_disconnected)
             
+            outbound_number = await get_setting("VOBIZ_OUTBOUND_NUMBER")
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
                     room_name=ctx.room.name,
                     sip_trunk_id=trunk_id,
                     sip_call_to=phone_number,
+                    sip_number=outbound_number,
                     participant_identity=_sip_identity,
                     wait_until_answered=False,
                 )
