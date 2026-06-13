@@ -274,9 +274,20 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
             def _on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
                 if participant.identity == _sip_identity:
-                    _answered_event.set()
+                    status = participant.attributes.get("sip.callStatus")
+                    logger.info(f"Track subscribed for {participant.identity}. Status: {status}, Attributes: {participant.attributes}")
+                    if not status or status == "active":
+                        _answered_event.set()
+
+            def _on_attributes_changed(changed: dict, participant: rtc.Participant):
+                if participant.identity == _sip_identity:
+                    status = participant.attributes.get("sip.callStatus")
+                    logger.info(f"Attributes changed for {participant.identity}. Status: {status}, Attributes: {participant.attributes}")
+                    if status == "active":
+                        _answered_event.set()
 
             ctx.room.on("track_subscribed", _on_track_subscribed)
+            ctx.room.on("participant_attributes_changed", _on_attributes_changed)
             
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
@@ -288,10 +299,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 )
             )
             
-            # Check if they connected and published a track instantly
+            # Check if they connected and are already active/have published a track
             for p in ctx.room.remote_participants.values():
-                if p.identity == _sip_identity and len(p.track_publications) > 0:
-                    _answered_event.set()
+                if p.identity == _sip_identity:
+                    status = p.attributes.get("sip.callStatus")
+                    if status == "active" or (not status and len(p.track_publications) > 0):
+                        _answered_event.set()
 
             try:
                 await asyncio.wait_for(_answered_event.wait(), timeout=60.0)
@@ -299,6 +312,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 raise TimeoutError("Timeout waiting for callee to answer")
             finally:
                 ctx.room.off("track_subscribed", _on_track_subscribed)
+                ctx.room.off("participant_attributes_changed", _on_attributes_changed)
 
             await _log("info", f"[LATENCY AUDIT] Callee answered. Ringing/pickup duration: {time.time() - t_dial_start:.2f}s")
         except Exception as exc:
