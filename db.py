@@ -99,8 +99,10 @@ def sync_dotenv_to_db() -> None:
             val = os.getenv(k)
             if val is not None and val != "":
                 # If key already exists in DB with a non-empty value, do not overwrite it
+                # EXCEPT for sensitive credentials which must sync from the environment
                 if k in existing and existing[k] is not None and existing[k] != "":
-                    continue
+                    if k not in SENSITIVE_KEYS:
+                        continue
                 rows.append({"key": k, "value": str(val), "updated_at": updated_at})
         if rows:
             db.table("settings").upsert(rows, on_conflict="key").execute()

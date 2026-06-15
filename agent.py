@@ -73,7 +73,8 @@ def load_db_settings_to_env() -> None:
         client = create_client(url, key)
         result = client.table("settings").select("key, value").execute()
         for row in (result.data or []):
-            if row.get("value"):
+            # Environment variables take precedence over database settings
+            if row.get("value") and not os.environ.get(row["key"]):
                 os.environ[row["key"]] = row["value"]
     except Exception as exc:
         logger.warning("Could not load settings from Supabase: %s", exc)
