@@ -35,7 +35,7 @@ except ImportError:
 from livekit.plugins import noise_cancellation
 from google.genai import types as _gt
 
-from db import init_db, log_error, get_enabled_tools, get_setting, log_call, update_call_outcome
+from db import init_db, log_error, get_enabled_tools, get_setting, log_call, update_call_outcome, SENSITIVE_KEYS
 from prompts import build_prompt
 from tools import AppointmentTools
 
@@ -73,9 +73,16 @@ def load_db_settings_to_env() -> None:
         client = create_client(url, key)
         result = client.table("settings").select("key, value").execute()
         for row in (result.data or []):
-            # Environment variables take precedence over database settings
-            if row.get("value") and not os.environ.get(row["key"]):
-                os.environ[row["key"]] = row["value"]
+            k = row.get("key")
+            v = row.get("value")
+            if v and k:
+                # Sensitive credentials: environment variables take precedence
+                if k in SENSITIVE_KEYS:
+                    if not os.environ.get(k):
+                        os.environ[k] = v
+                else:
+                    # Runtime configuration parameters (model, voice, trunk ID): database settings take precedence
+                    os.environ[k] = v
     except Exception as exc:
         logger.warning("Could not load settings from Supabase: %s", exc)
 
