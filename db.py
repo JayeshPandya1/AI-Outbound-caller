@@ -89,11 +89,18 @@ def sync_dotenv_to_db() -> None:
             "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
             "ENABLED_TOOLS", "VOBIZ_WEBHOOK_SECRET", "VOBIZ_AUTH_ID", "VOBIZ_AUTH_TOKEN",
         ]
+        # Fetch existing settings from Supabase to avoid overwriting them with env vars
+        res = db.table("settings").select("key, value").execute()
+        existing = {row["key"]: row["value"] for row in res.data or []}
+
         rows = []
         updated_at = datetime.now(timezone.utc).isoformat()
         for k in KNOWN_KEYS:
             val = os.getenv(k)
             if val is not None and val != "":
+                # If key already exists in DB with a non-empty value, do not overwrite it
+                if k in existing and existing[k] is not None and existing[k] != "":
+                    continue
                 rows.append({"key": k, "value": str(val), "updated_at": updated_at})
         if rows:
             db.table("settings").upsert(rows, on_conflict="key").execute()
