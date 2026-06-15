@@ -153,7 +153,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             _realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
                     end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=500,
+                    silence_duration_ms=400,
                     prefix_padding_ms=200,
                 ),
             )
@@ -429,10 +429,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         _user_speech_stop_time = time.time()
         logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
 
-    # Pass RoomInputOptions with noise cancellation and disable close_on_disconnect
+    # Pass RoomInputOptions and disable close_on_disconnect (Telephony G.711 has carrier-level AEC; disabling server NC saves ~150-250ms buffering)
     _room_input_options = RoomInputOptions(
         close_on_disconnect=False,
-        noise_cancellation=noise_cancellation.BVCTelephony(),
+        noise_cancellation=None,
     )
     _session_kwargs = dict(
         room=ctx.room,
@@ -501,8 +501,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         asyncio.create_task(start_recording_background())
 
     # ── Greeting ─────────────────────────────────────────────────────────────
-    # PERF FIX #3: Reduced from 0.5s to 0.1s — 100ms is sufficient for SIP media bridge handoff
-    await asyncio.sleep(0.1)
+    # Wait 2.0s for SIP carrier media path cut-through to connect fully, so callee hears the greeting.
+    await asyncio.sleep(2.0)
     greeting = (
         f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
         if phone_number else "Greet the caller warmly."
