@@ -46,13 +46,20 @@ SIP_DOMAIN = os.getenv("VOBIZ_SIP_DOMAIN", "")
 
 
 async def _log(level: str, msg: str, detail: str = "") -> None:
-    if level == "info":      logger.info(msg)
-    elif level == "warning": logger.warning(msg)
-    else:                    logger.error(msg)
-    try:
-        asyncio.create_task(log_error("agent", msg, detail, level))
-    except Exception:
-        pass
+    if level == "info":      
+        logger.info(msg)
+    elif level == "warning": 
+        logger.warning(msg)
+        try:
+            asyncio.create_task(log_error("agent", msg, detail, level))
+        except Exception:
+            pass
+    else:                    
+        logger.error(msg)
+        try:
+            asyncio.create_task(log_error("agent", msg, detail, level))
+        except Exception:
+            pass
 
 
 def load_db_settings_to_env() -> None:
@@ -145,8 +152,8 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
         try:
             _realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
-                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
-                    silence_duration_ms=600,
+                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
+                    silence_duration_ms=500,
                     prefix_padding_ms=200,
                 ),
             )
@@ -155,7 +162,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
                 trigger_tokens=25600,
                 sliding_window=_gt.SlidingWindow(target_tokens=12800),
             )
-            logger.info("Silence-prevention config applied (VAD LOW, transparent resumption, context compression)")
+            logger.info("Silence-prevention config applied (VAD HIGH, transparent resumption, context compression)")
         except Exception as _cfg_err:
             logger.warning("Could not build silence-prevention config: %s", _cfg_err)
             _realtime_input_cfg = None
@@ -396,9 +403,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     session = _build_session(tools=active_tools, system_prompt=system_prompt, gemini_model=gemini_model, gemini_voice=gemini_voice)
     await _log("info", f"[LATENCY AUDIT] Session object built in {time.time() - t_session_init:.2f}s")
 
+    _user_speech_stop_time = 0.0
+
     @session.on("generation_created")
     def _on_generation_created(event):
-        logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {time.time() - call_start_time:.2f}s")
+        nonlocal _user_speech_stop_time
+        now = time.time()
+        if _user_speech_stop_time > 0.0:
+            reply_latency = now - _user_speech_stop_time
+            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD to response): {reply_latency * 1000:.0f}ms")
+        else:
+            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s")
 
     @session.on("input_audio_transcription_completed")
     def _on_input_audio_transcription_completed(event):
@@ -410,7 +425,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     @session.on("input_speech_stopped")
     def _on_input_speech_stopped(event):
-        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {time.time() - call_start_time:.2f}s")
+        nonlocal _user_speech_stop_time
+        _user_speech_stop_time = time.time()
+        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
 
     # Pass RoomInputOptions with noise cancellation and disable close_on_disconnect
     _room_input_options = RoomInputOptions(

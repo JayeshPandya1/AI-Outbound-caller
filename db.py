@@ -118,7 +118,10 @@ def init_db() -> None:
         print("   Run supabase_schema.sql in your Supabase Dashboard -> SQL Editor")
 
 
-# ── Settings ─────────────────────────────────────────────────────────────────
+# ── Settings Cache (PERF: Reduces settings retrieval latency to 0ms after first lookup) ──
+_settings_cache = {}
+_settings_cache_lock = asyncio.Lock()
+
 
 async def get_all_settings() -> dict:
     db = await _adb()
@@ -161,14 +164,31 @@ async def save_settings(data: dict) -> None:
     ]
     if rows:
         await db.table("settings").upsert(rows, on_conflict="key").execute()
+        async with _settings_cache_lock:
+            for k, v in data.items():
+                if v is not None and v != "":
+                    _settings_cache[k] = str(v)
 
 
 async def get_setting(key: str, default: str = "") -> str:
-    db = await _adb()
-    result = await db.table("settings").select("value").eq("key", key).maybe_single().execute()
-    if result and result.data:
-        return result.data["value"]
-    return _default(key) or default
+    global _settings_cache
+    if key in _settings_cache:
+        return _settings_cache[key]
+    
+    async with _settings_cache_lock:
+        if key in _settings_cache:
+            return _settings_cache[key]
+        
+        db = await _adb()
+        result = await db.table("settings").select("value").eq("key", key).maybe_single().execute()
+        val = ""
+        if result and result.data:
+            val = result.data["value"]
+        else:
+            val = _default(key) or default
+        
+        _settings_cache[key] = val
+        return val
 
 
 async def set_setting(key: str, value: str) -> None:
@@ -177,6 +197,8 @@ async def set_setting(key: str, value: str) -> None:
         {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()},
         on_conflict="key",
     ).execute()
+    async with _settings_cache_lock:
+        _settings_cache[key] = value
 
 
 async def get_enabled_tools() -> list:
