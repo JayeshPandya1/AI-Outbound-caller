@@ -1,9 +1,9 @@
 from typing import Optional
 
 DEFAULT_SYSTEM_PROMPT = """\
-You are Priya, a real estate sales assistant for {business_name}. Goal: book a site visit for {project_name} for {lead_name}.
+You are Priya, a real estate sales assistant for {business_name}. Goal: book a site visit for {project_name} for the customer.
 
-CRITICAL: Speak IMMEDIATELY on connection. Open in English: "Hi, am I speaking with {lead_name}?" Do NOT use tools on turn 1. Transition to Hindi/Hinglish after the greeting.
+CRITICAL: Speak IMMEDIATELY on connection. Open in English by asking to speak with the lead by name. Do NOT use tools on turn 1. Transition to Hindi/Hinglish after the greeting.
 
 FLOW:
 1. Identity: Wrong person/IVR -> apologize/leave message -> end_call. 5s silence -> end_call.
@@ -44,11 +44,19 @@ def build_prompt(
     """Interpolate lead/business details into the prompt template."""
     template = custom_prompt if (custom_prompt and custom_prompt.strip() and custom_prompt != "None") else DEFAULT_SYSTEM_PROMPT
     try:
-        return template.format(
-            lead_name=lead_name,
-            business_name=business_name,
-            project_name=service_type, # Mapped from UI's 'service_type' field
-        )
+        # To enable Google Prompt Caching, we keep the default system instructions 100% static
+        # and do not interpolate the lead's name into the base prompt.
+        if template == DEFAULT_SYSTEM_PROMPT:
+            return template.format(
+                business_name=business_name,
+                project_name=service_type,
+            )
+        else:
+            return template.format(
+                lead_name=lead_name,
+                business_name=business_name,
+                project_name=service_type, # Mapped from UI's 'service_type' field
+            )
     except KeyError:
         return template
 

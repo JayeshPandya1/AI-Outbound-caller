@@ -184,9 +184,20 @@ async def get_setting(key: str, default: str = "") -> str:
     if key in _settings_cache:
         return _settings_cache[key]
     
+    # Check preloaded environment variables first to avoid Supabase lookup latency
+    env_val = os.getenv(key)
+    if env_val is not None and env_val != "":
+        _settings_cache[key] = env_val
+        return env_val
+    
     async with _settings_cache_lock:
         if key in _settings_cache:
             return _settings_cache[key]
+        
+        env_val = os.getenv(key)
+        if env_val is not None and env_val != "":
+            _settings_cache[key] = env_val
+            return env_val
         
         db = await _adb()
         result = await db.table("settings").select("value").eq("key", key).maybe_single().execute()

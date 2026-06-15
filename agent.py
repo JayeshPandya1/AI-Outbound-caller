@@ -430,6 +430,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         _user_speech_stop_time = time.time()
         logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
 
+    @session.on("error")
+    def _on_session_error(error):
+        logger.error(f"Gemini Live session error: {error}")
+        try:
+            asyncio.create_task(log_error("agent", f"Gemini Live session error: {error}", level="error"))
+        except Exception:
+            pass
+
     # Pass RoomInputOptions and disable close_on_disconnect (Telephony G.711 has carrier-level AEC; disabling server NC saves ~150-250ms buffering)
     _room_input_options = RoomInputOptions(
         close_on_disconnect=False,
