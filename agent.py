@@ -463,6 +463,28 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await _log("info", f"[LATENCY AUDIT] Live API connected / session started in {t_session_started - t_session_start:.2f}s")
     await _log("info", "Agent session started — AI ready, generating greeting")
 
+    # Send zero-latency synthetic greeting trigger
+    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
+    if use_realtime:
+        try:
+            turns = [
+                _gt.Content(parts=[_gt.Part(text="[SYSTEM: CALL_CONNECTED]")], role="user")
+            ]
+            rt_session = session._activity.realtime_llm_session
+            if rt_session is not None:
+                rt_session._send_client_event(_gt.LiveClientContent(turns=turns, turn_complete=True))
+                await _log("info", "[LATENCY AUDIT] Synthetic user turn [SYSTEM: CALL_CONNECTED] sent successfully.")
+            else:
+                await _log("error", "Direct Live API greeting failed: realtime_llm_session is None")
+        except Exception as _inner_exc:
+            await _log("error", f"Fallback custom trigger failed: {_inner_exc}")
+    else:
+        try:
+            await session.generate_reply(user_input="[SYSTEM: CALL_CONNECTED]")
+            await _log("info", "[LATENCY AUDIT] Pipeline greeting reply triggered successfully.")
+        except Exception as _gr_exc:
+            await _log("error", f"Pipeline greeting reply failed: {_gr_exc}")
+
     # PERF FIX #6: Structured latency summary — all milestones in one log entry
     await _log("info", (
         f"[LATENCY SUMMARY] "
@@ -515,41 +537,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     if phone_number:
         asyncio.create_task(start_recording_background())
-
-    # ── Greeting ─────────────────────────────────────────────────────────────
-    # Wait 2.0s for SIP carrier media path cut-through to connect fully, so callee hears the greeting.
-    await asyncio.sleep(2.0)
-    greeting = (
-        f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
-        if phone_number else "Greet the caller warmly."
-    )
-    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
-    if use_realtime:
-        try:
-            t_greet_start = time.time()
-            await _log("info", f"[LATENCY AUDIT] Triggering direct Live API greeting. Session time: {t_greet_start - call_start_time:.2f}s")
-            
-            # Bypasses the mutable_chat_context blocks in the plugin by sending the Content trigger directly
-            turns = [
-                _gt.Content(parts=[_gt.Part(text=greeting)], role="model"),
-                _gt.Content(parts=[_gt.Part(text=".")], role="user")
-            ]
-            rt_session = session._activity.realtime_llm_session
-            if rt_session is not None:
-                rt_session._send_client_event(_gt.LiveClientContent(turns=turns, turn_complete=True))
-                await _log("info", f"[LATENCY AUDIT] Direct LiveClientContent greeting trigger sent successfully in {time.time() - t_greet_start:.2f}s")
-            else:
-                await _log("error", "Direct Live API greeting failed: realtime_llm_session is None")
-        except Exception as _inner_exc:
-            await _log("error", f"Fallback custom trigger failed: {_inner_exc}")
-    else:
-        try:
-            t_greet_start = time.time()
-            await _log("info", f"[LATENCY AUDIT] Triggering pipeline greeting reply. Session time: {t_greet_start - call_start_time:.2f}s")
-            await session.generate_reply(instructions=greeting)
-            await _log("info", f"[LATENCY AUDIT] Pipeline greeting reply triggered successfully in {time.time() - t_greet_start:.2f}s")
-        except Exception as _gr_exc:
-            await _log("error", f"Pipeline greeting reply failed: {_gr_exc}")
 
     # ── Keep session alive until SIP participant actually leaves ─────────────
     # Without this block, the entrypoint returns and the process spins down.
