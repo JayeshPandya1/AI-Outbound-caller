@@ -774,8 +774,8 @@
           </div>
           <label>Model</label>
           <select id="ap-model">
-            <option value="gemini-2.5-flash-native-audio-preview-12-2025" selected>gemini-2.5-flash-native-audio (Realtime)</option>
-            <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview (Beta)</option>
+            <option value="gemini-3.1-flash-live-preview" selected>gemini-3.1-flash-live-preview (Realtime)</option>
+            <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio (Beta)</option>
           </select>
           <label>System Prompt (Overrides global)</label>
           <textarea id="ap-prompt"></textarea>
@@ -1580,7 +1580,7 @@
     window.setDefaultAgentProfile = async (id) => { await apiPost(`/api/agent-profiles/${id}/set-default`, {}); loadAgentProfiles(); }
     window.deleteAgentProfile = async (id) => { await apiDel(`/api/agent-profiles/${id}`); loadAgentProfiles(); }
     window.resetAgentForm = () => {
-      $('ap-id').value = ''; $('ap-name').value = ''; $('ap-voice').value = 'Aoede'; $('ap-model').value = 'gemini-2.5-flash-native-audio-preview-12-2025';
+      $('ap-id').value = ''; $('ap-name').value = ''; $('ap-voice').value = 'Aoede'; $('ap-model').value = 'gemini-3.1-flash-live-preview';
       $('ap-prompt').value = ''; $('ap-tools').value = '[]'; $('ap-default').checked = false;
       $('agent-f-title').textContent = 'Create Profile';
     }

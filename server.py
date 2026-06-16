@@ -127,7 +127,7 @@ class CallRequest(BaseModel):
 class AgentProfileRequest(BaseModel):
     name: str
     voice: str = "Aoede"
-    model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    model: str = "gemini-3.1-flash-live-preview"
     system_prompt: Optional[str] = None
     enabled_tools: str = "[]"
     is_default: bool = False

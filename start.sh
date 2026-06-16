@@ -10,7 +10,7 @@ fi
 
 echo "📋 Configuration:"
 echo "   LiveKit: ${LIVEKIT_URL}"
-echo "   Gemini: ${GEMINI_MODEL:-gemini-2.5-flash-native-audio-preview-12-2025}"
+echo "   Gemini: ${GEMINI_MODEL:-gemini-3.1-flash-live-preview}"
 echo "   Supabase: ${SUPABASE_URL}"
 
 echo "🌐 Starting FastAPI server on port 8000..."
