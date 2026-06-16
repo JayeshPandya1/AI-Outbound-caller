@@ -161,7 +161,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             _realtime_input_cfg = _gt.RealtimeInputConfig(
                 automatic_activity_detection=_gt.AutomaticActivityDetection(
                     end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=400,
+                    silence_duration_ms=600,
                     prefix_padding_ms=200,
                 ),
             )
@@ -309,7 +309,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 if participant.identity == _sip_identity:
                     status = participant.attributes.get("sip.callStatus")
                     logger.info(f"Track subscribed for {participant.identity}. Status: {status}, Attributes: {participant.attributes}")
-                    if not status or status == "active":
+                    if status == "active":
                         _answered_event.set()
 
             def _on_attributes_changed(changed: dict, participant: rtc.Participant):
@@ -357,7 +357,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             for p in ctx.room.remote_participants.values():
                 if p.identity == _sip_identity:
                     status = p.attributes.get("sip.callStatus")
-                    if status == "active" or (not status and len(p.track_publications) > 0):
+                    if status == "active":
                         _answered_event.set()
 
             try:
@@ -447,10 +447,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except Exception:
             pass
 
-    # Pass RoomInputOptions and disable close_on_disconnect (Telephony G.711 has carrier-level AEC; disabling server NC saves ~150-250ms buffering)
+    # Pass RoomInputOptions and disable close_on_disconnect
     _room_input_options = RoomInputOptions(
         close_on_disconnect=False,
-        noise_cancellation=None,
+        noise_cancellation=noise_cancellation.BVCTelephony(),
     )
     _session_kwargs = dict(
         room=ctx.room,
@@ -465,27 +465,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await _log("info", f"[LATENCY AUDIT] Live API connected / session started in {t_session_started - t_session_start:.2f}s")
     await _log("info", "Agent session started — AI ready, generating greeting")
 
-    # Send zero-latency synthetic greeting trigger
-    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
-    if use_realtime:
-        try:
-            turns = [
-                _gt.Content(parts=[_gt.Part(text="[SYSTEM: CALL_CONNECTED]")], role="user")
-            ]
-            rt_session = session._activity.realtime_llm_session
-            if rt_session is not None:
-                rt_session._send_client_event(_gt.LiveClientContent(turns=turns, turn_complete=True))
-                await _log("info", "[LATENCY AUDIT] Synthetic user turn [SYSTEM: CALL_CONNECTED] sent successfully.")
-            else:
-                await _log("error", "Direct Live API greeting failed: realtime_llm_session is None")
-        except Exception as _inner_exc:
-            await _log("error", f"Fallback custom trigger failed: {_inner_exc}")
-    else:
-        try:
-            await session.generate_reply(user_input="[SYSTEM: CALL_CONNECTED]")
-            await _log("info", "[LATENCY AUDIT] Pipeline greeting reply triggered successfully.")
-        except Exception as _gr_exc:
-            await _log("error", f"Pipeline greeting reply failed: {_gr_exc}")
+    # Wait 1.2s for media cut-through before speaking
+    await asyncio.sleep(1.2)
+
+    # Trigger greeting
+    try:
+        # Using session.generate_reply ensures the turn-taking states are properly updated.
+        await session.generate_reply(user_input="[SYSTEM: CALL_CONNECTED]")
+        await _log("info", "[LATENCY AUDIT] Greeting reply triggered successfully via generate_reply.")
+    except Exception as _gr_exc:
+        await _log("error", f"Greeting reply failed: {_gr_exc}")
 
     # PERF FIX #6: Structured latency summary — all milestones in one log entry
     await _log("info", (
