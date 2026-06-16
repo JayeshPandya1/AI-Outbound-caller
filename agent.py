@@ -183,6 +183,8 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             # max_output_tokens as safety net to prevent runaway generation.
             temperature=0.6,
             max_output_tokens=256,
+            tool_behavior=_gt.Behavior.NON_BLOCKING,
+            tool_response_scheduling=_gt.FunctionResponseScheduling.WHEN_IDLE,
         )
         if _realtime_input_cfg is not None:
             realtime_kwargs["realtime_input_config"]      = _realtime_input_cfg
@@ -266,7 +268,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # Before: 3 sequential get_setting() calls = 0.6-1.5s of serial round-trips.
     # After: 1 wall-clock round-trip for all 3.
     async def _noop(): return None
-    _model_coro = get_setting("GEMINI_MODEL", "gemini-3.1-flash-live-preview") if not model_override else _noop()
+    _model_coro = get_setting("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025") if not model_override else _noop()
     _voice_coro = get_setting("GEMINI_TTS_VOICE", "Aoede") if not voice_override else _noop()
     _tools_coro = get_enabled_tools() if not tools_override else _noop()
     _model_r, _voice_r, _tools_r = await asyncio.gather(_model_coro, _voice_coro, _tools_coro)
