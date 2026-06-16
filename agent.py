@@ -222,6 +222,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     phone_number: Optional[str] = None
     lead_name = "there"
+    _callee_answer_time = 0.0
     business_name = "our company"
     service_type = "our service"
     custom_prompt: Optional[str] = None
@@ -401,8 +402,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             if isinstance(exc, BaseException) and not isinstance(exc, Exception):
                 raise exc
             return
+        _callee_answer_time = time.time()
         await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")
-        tool_ctx._call_start_time = time.time()
+        tool_ctx._call_start_time = _callee_answer_time
 
     # ── Build and start Gemini Live ──────────────────────────────────────────
     t_session_init = time.time()
@@ -446,6 +448,23 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         except Exception:
             pass
 
+    _first_audio_sent = False
+
+    @session.on("agent_state_changed")
+    def _on_agent_state_changed(event):
+        nonlocal _first_audio_sent, _user_speech_stop_time
+        new_state = event.new_state
+        now = time.time()
+        if new_state == "speaking":
+            if not _first_audio_sent and _callee_answer_time > 0.0:
+                answer_to_audio = now - _callee_answer_time
+                logger.info(f"[LATENCY AUDIT] Answer to first agent audio sent: {answer_to_audio * 1000:.0f}ms")
+                _first_audio_sent = True
+            if _user_speech_stop_time > 0.0:
+                vad_to_audio = now - _user_speech_stop_time
+                logger.info(f"[LATENCY AUDIT] User speech stopped to first agent audio: {vad_to_audio * 1000:.0f}ms")
+                _user_speech_stop_time = 0.0
+
     # Pass RoomInputOptions and disable close_on_disconnect
     _room_input_options = RoomInputOptions(
         close_on_disconnect=False,
@@ -469,9 +488,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     # Trigger greeting
     try:
-        # Using session.generate_reply ensures the turn-taking states are properly updated.
-        await session.generate_reply(user_input="[SYSTEM: CALL_CONNECTED]")
-        await _log("info", "[LATENCY AUDIT] Greeting reply triggered successfully via generate_reply.")
+        rt_session = session._activity
+        # Check if the model has mutable chat context (Gemini 3.1 Live has mutable_chat_context=False)
+        if rt_session is not None and not getattr(rt_session.realtime_model.capabilities, "mutable_chat_context", True):
+            # For Gemini 3.1 Live API, we push the text event directly to the realtime WebSocket channel
+            event = _gt.LiveClientRealtimeInput(text="[SYSTEM: CALL_CONNECTED]")
+            rt_session._send_client_event(event)
+            await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via direct LiveClientRealtimeInput.")
+        else:
+            # Fallback for models with mutable chat context (like Gemini 2.5) or pipeline fallback
+            await session.generate_reply(user_input="[SYSTEM: CALL_CONNECTED]")
+            await _log("info", "[LATENCY AUDIT] Greeting reply triggered successfully via generate_reply.")
     except Exception as _gr_exc:
         await _log("error", f"Greeting reply failed: {_gr_exc}")
 
