@@ -11,7 +11,7 @@ from db import (
     check_slot, get_next_available, insert_appointment, log_call, log_error,
     get_calls_by_phone, get_appointments_by_phone,
     add_contact_memory, get_contact_memory, compress_contact_memory,
-    update_call_outcome, update_call_recording,
+    update_call_outcome, update_call_recording, clear_contact_cache,
 )
 
 logger = logging.getLogger("appointment-tools")
@@ -91,6 +91,7 @@ class AppointmentTools(llm.ToolContext):
         outcome: 'booked' | 'not_interested' | 'wrong_number' | 'voicemail' | 'no_answer' | 'callback_requested'
         reason: brief description
         """
+        t0 = time.time()
         self.call_active = False
         duration = int(time.time() - self._call_start_time)
         try:
@@ -104,12 +105,15 @@ class AppointmentTools(llm.ToolContext):
                     lead_name=self.lead_name, outcome=outcome, reason=reason,
                     duration_seconds=duration, recording_url=self.recording_url,
                 )
+            if self.phone_number:
+                await clear_contact_cache(self.phone_number)
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
         try:
             await self.ctx.room.disconnect()
         except Exception:
             pass
+        logger.info(f"[LATENCY AUDIT] end_call execution took {time.time() - t0:.2f}s")
         return "Call ended."
 
     @llm.function_tool
@@ -119,6 +123,7 @@ class AppointmentTools(llm.ToolContext):
         Call when lead requests a human, is angry, or has a complex issue.
         reason: why you're transferring
         """
+        t0 = time.time()
         destination = os.getenv("DEFAULT_TRANSFER_NUMBER", "")
         if not destination:
             return "Transfer unavailable: no fallback number configured."
@@ -155,10 +160,14 @@ class AppointmentTools(llm.ToolContext):
                         lead_name=self.lead_name, outcome="transferred", reason=f"Transferred: {reason}",
                         duration_seconds=duration, recording_url=self.recording_url,
                     )
+                if self.phone_number:
+                    await clear_contact_cache(self.phone_number)
             except Exception as log_exc:
                 logger.error("Failed to log transfer: %s", log_exc)
+            logger.info(f"[LATENCY AUDIT] transfer_to_human execution took {time.time() - t0:.2f}s")
             return "Transferring you to a human agent now. Please hold."
         except Exception as exc:
+            logger.warning(f"[LATENCY AUDIT] transfer_to_human failed in {time.time() - t0:.2f}s: {exc}")
             return "Transfer failed. Please call us back directly."
 
     @llm.function_tool
@@ -167,6 +176,7 @@ class AppointmentTools(llm.ToolContext):
         Send SMS confirmation after a successful booking. Skips silently if Twilio not configured.
         phone: lead's phone | message: text to send
         """
+        t0 = time.time()
         sid = os.getenv("TWILIO_ACCOUNT_SID", "")
         token = os.getenv("TWILIO_AUTH_TOKEN", "")
         from_num = os.getenv("TWILIO_FROM_NUMBER", "")
@@ -174,11 +184,15 @@ class AppointmentTools(llm.ToolContext):
             return "SMS skipped: Twilio not configured."
         try:
             from twilio.rest import Client
+            from twilio.http.http_client import TwilioHttpClient
             loop = asyncio.get_event_loop()
-            client = Client(sid, token)
+            http_client = TwilioHttpClient(timeout=5.0)
+            client = Client(sid, token, http_client=http_client)
             await loop.run_in_executor(None, lambda: client.messages.create(body=message, from_=from_num, to=phone))
+            logger.info(f"[LATENCY AUDIT] send_sms_confirmation execution took {time.time() - t0:.2f}s")
             return f"SMS sent to {phone}."
         except Exception as exc:
+            logger.warning(f"[LATENCY AUDIT] send_sms_confirmation failed in {time.time() - t0:.2f}s: {exc}")
             return "SMS delivery failed, but booking is confirmed."
 
     @llm.function_tool
@@ -224,6 +238,7 @@ class AppointmentTools(llm.ToolContext):
         Examples: "Prefers morning calls", "Has 2 kids, interested in family plan", "Callback in 2 weeks"
         insight: the detail to remember
         """
+        t0 = time.time()
         if not self.phone_number:
             return "Cannot remember — no phone number for this call."
         try:
@@ -231,8 +246,10 @@ class AppointmentTools(llm.ToolContext):
             memories = await get_contact_memory(self.phone_number)
             if len(memories) >= 5:
                 asyncio.create_task(self._compress_memories())
+            logger.info(f"[LATENCY AUDIT] remember_details execution took {time.time() - t0:.2f}s")
             return f"Remembered: {insight}"
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"[LATENCY AUDIT] remember_details failed in {time.time() - t0:.2f}s: {exc}")
             return "Could not save detail."
 
     async def _compress_memories(self) -> None:
@@ -261,6 +278,7 @@ class AppointmentTools(llm.ToolContext):
         Book in Cal.com calendar after book_appointment succeeds.
         name: full name | email: lead's email | date: YYYY-MM-DD | start_time: HH:MM | notes: optional
         """
+        t0 = time.time()
         api_key = os.getenv("CALCOM_API_KEY", "")
         event_type_id = os.getenv("CALCOM_EVENT_TYPE_ID", "")
         timezone = os.getenv("CALCOM_TIMEZONE", "Asia/Kolkata")
@@ -271,7 +289,7 @@ class AppointmentTools(llm.ToolContext):
             start_dt = _dt.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
             start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
             import httpx
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(
                     "https://api.cal.com/v1/bookings",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -283,8 +301,10 @@ class AppointmentTools(llm.ToolContext):
             if resp.status_code not in (200, 201):
                 raise ValueError(data.get("message") or str(data))
             uid = data.get("uid", "")
+            logger.info(f"[LATENCY AUDIT] book_calcom execution took {time.time() - t0:.2f}s")
             return f"Cal.com booked. UID: {uid}"
         except Exception as exc:
+            logger.warning(f"[LATENCY AUDIT] book_calcom failed in {time.time() - t0:.2f}s: {exc}")
             return f"Cal.com booking failed: {exc}"
 
     @llm.function_tool
@@ -293,12 +313,13 @@ class AppointmentTools(llm.ToolContext):
         Cancel a Cal.com booking by UID.
         booking_uid: from book_calcom | reason: optional
         """
+        t0 = time.time()
         api_key = os.getenv("CALCOM_API_KEY", "")
         if not api_key:
             return "Cal.com not configured."
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.delete(
                     f"https://api.cal.com/v1/bookings/{booking_uid}",
                     headers={"Authorization": f"Bearer {api_key}"},
@@ -306,6 +327,8 @@ class AppointmentTools(llm.ToolContext):
                 )
             if resp.status_code not in (200, 204):
                 raise ValueError(f"HTTP {resp.status_code}")
+            logger.info(f"[LATENCY AUDIT] cancel_calcom execution took {time.time() - t0:.2f}s")
             return f"Cancelled Cal.com booking {booking_uid}."
         except Exception as exc:
+            logger.warning(f"[LATENCY AUDIT] cancel_calcom failed in {time.time() - t0:.2f}s: {exc}")
             return f"Cancellation failed: {exc}"

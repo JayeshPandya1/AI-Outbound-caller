@@ -405,6 +405,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         _callee_answer_time = time.time()
         await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")
         tool_ctx._call_start_time = _callee_answer_time
+        
+        # Start pre-caching CRM contact details in the background immediately
+        from db import get_calls_by_phone, get_appointments_by_phone, get_contact_memory
+        asyncio.create_task(get_calls_by_phone(phone_number))
+        asyncio.create_task(get_appointments_by_phone(phone_number))
+        asyncio.create_task(get_contact_memory(phone_number))
 
     # ── Build and start Gemini Live ──────────────────────────────────────────
     t_session_init = time.time()

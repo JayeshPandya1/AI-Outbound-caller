@@ -131,6 +131,10 @@ def init_db() -> None:
 _settings_cache = {}
 _settings_cache_lock = asyncio.Lock()
 
+# ── Contact Cache (PERF: Caches CRM contact queries for 0ms lookup latency) ──
+_contact_cache = {}
+_contact_cache_lock = asyncio.Lock()
+
 
 async def get_all_settings() -> dict:
     db = await _adb()
@@ -283,6 +287,9 @@ async def insert_appointment(name: str, phone: str, date: str, time: str, servic
         "date": date, "time": time, "service": service,
         "status": "booked", "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
+    async with _contact_cache_lock:
+        if phone in _contact_cache:
+            _contact_cache[phone].pop("appointments", None)
     return booking_id
 
 
@@ -330,9 +337,16 @@ async def cancel_appointment(appointment_id: str) -> bool:
 
 
 async def get_appointments_by_phone(phone: str) -> list:
+    if phone in _contact_cache and "appointments" in _contact_cache[phone]:
+        return _contact_cache[phone]["appointments"]
     db = await _adb()
     result = await db.table("appointments").select("*").eq("phone", phone).order("date", desc=True).execute()
-    return result.data or []
+    val = result.data or []
+    async with _contact_cache_lock:
+        if phone not in _contact_cache:
+            _contact_cache[phone] = {}
+        _contact_cache[phone]["appointments"] = val
+    return val
 
 
 # ── Call logs ─────────────────────────────────────────────────────────────────
@@ -353,6 +367,9 @@ async def log_call(
     if notes:
         row["notes"] = notes
     await db.table("call_logs").insert(row).execute()
+    async with _contact_cache_lock:
+        if phone_number in _contact_cache:
+            _contact_cache[phone_number].pop("calls", None)
     return call_id
 
 
@@ -374,9 +391,16 @@ async def get_all_calls(page: int = 1, limit: int = 20) -> list:
 
 
 async def get_calls_by_phone(phone: str) -> list:
+    if phone in _contact_cache and "calls" in _contact_cache[phone]:
+        return _contact_cache[phone]["calls"]
     db = await _adb()
     result = await db.table("call_logs").select("*").eq("phone_number", phone).order("timestamp", desc=True).execute()
-    return result.data or []
+    val = result.data or []
+    async with _contact_cache_lock:
+        if phone not in _contact_cache:
+            _contact_cache[phone] = {}
+        _contact_cache[phone]["calls"] = val
+    return val
 
 
 async def update_call_notes(call_id: str, notes: str) -> bool:
@@ -511,21 +535,34 @@ async def delete_campaign(campaign_id: str) -> bool:
 
 # ── Contact Memory ────────────────────────────────────────────────────────────
 
+async def clear_contact_cache(phone: str) -> None:
+    async with _contact_cache_lock:
+        _contact_cache.pop(phone, None)
+
+
 async def add_contact_memory(phone: str, insight: str) -> None:
     db = await _adb()
     await db.table("contact_memory").insert({
         "id": str(uuid.uuid4()), "phone_number": phone,
         "insight": insight[:1000], "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
+    await clear_contact_cache(phone)
 
 
 async def get_contact_memory(phone: str) -> list:
+    if phone in _contact_cache and "memory" in _contact_cache[phone]:
+        return _contact_cache[phone]["memory"]
     db = await _adb()
     result = await (
         db.table("contact_memory").select("insight, created_at")
         .eq("phone_number", phone).order("created_at", desc=True).limit(20).execute()
     )
-    return result.data or []
+    val = result.data or []
+    async with _contact_cache_lock:
+        if phone not in _contact_cache:
+            _contact_cache[phone] = {}
+        _contact_cache[phone]["memory"] = val
+    return val
 
 
 async def compress_contact_memory(phone: str, compressed: str) -> None:
@@ -535,6 +572,7 @@ async def compress_contact_memory(phone: str, compressed: str) -> None:
         "id": str(uuid.uuid4()), "phone_number": phone,
         "insight": compressed[:2000], "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
+    await clear_contact_cache(phone)
 
 
 # ── Agent Profiles ────────────────────────────────────────────────────────────
