@@ -257,6 +257,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 duration_seconds=0
             )
             logger.info(f"Initialized call log in Supabase with ID: {call_db_id}")
+            
+            # Start pre-caching CRM contact details in the background immediately
+            from db import get_calls_by_phone, get_appointments_by_phone, get_contact_memory
+            asyncio.create_task(get_calls_by_phone(phone_number))
+            asyncio.create_task(get_appointments_by_phone(phone_number))
+            asyncio.create_task(get_contact_memory(phone_number))
         except Exception as log_exc:
             logger.error("Failed to initialize call log: %s", log_exc)
 
@@ -288,7 +294,81 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await ctx.connect()
     await _log("info", f"Connected to LiveKit room: {ctx.room.name}")
 
-    # ── Dial — MUST come before session.start() ──────────────────────────────
+    # ── Build and start AI session in the background ──
+    t_session_init = time.time()
+    await _log("info", f"[LATENCY AUDIT] Building AI session (model={gemini_model}) at {t_session_init - call_start_time:.2f}s")
+    active_tools = tool_ctx.build_tool_list(enabled_tools)
+    await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
+    session = _build_session(tools=active_tools, system_prompt=system_prompt, gemini_model=gemini_model, gemini_voice=gemini_voice)
+    await _log("info", f"[LATENCY AUDIT] Session object built in {time.time() - t_session_init:.2f}s")
+
+    _user_speech_stop_time = 0.0
+
+    @session.on("generation_created")
+    def _on_generation_created(event):
+        nonlocal _user_speech_stop_time
+        now = time.time()
+        if _user_speech_stop_time > 0.0:
+            reply_latency = now - _user_speech_stop_time
+            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD to response): {reply_latency * 1000:.0f}ms")
+        else:
+            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s")
+
+    @session.on("input_audio_transcription_completed")
+    def _on_input_audio_transcription_completed(event):
+        logger.info(f"[LATENCY AUDIT] User utterance transcription finished: '{event.transcript}' at {time.time() - call_start_time:.2f}s (is_final={event.is_final})")
+
+    @session.on("input_speech_started")
+    def _on_input_speech_started(event):
+        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User started speaking at {time.time() - call_start_time:.2f}s")
+
+    @session.on("input_speech_stopped")
+    def _on_input_speech_stopped(event):
+        nonlocal _user_speech_stop_time
+        _user_speech_stop_time = time.time()
+        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
+
+    @session.on("error")
+    def _on_session_error(error):
+        logger.error(f"Gemini Live session error: {error}")
+        try:
+            asyncio.create_task(log_error("agent", f"Gemini Live session error: {error}", level="error"))
+        except Exception:
+            pass
+
+    _first_audio_sent = False
+    _callee_answer_time = 0.0
+
+    @session.on("agent_state_changed")
+    def _on_agent_state_changed(event):
+        nonlocal _first_audio_sent, _user_speech_stop_time
+        new_state = event.new_state
+        now = time.time()
+        if new_state == "speaking":
+            if not _first_audio_sent and _callee_answer_time > 0.0:
+                answer_to_audio = now - _callee_answer_time
+                logger.info(f"[LATENCY AUDIT] Answer to first agent audio sent: {answer_to_audio * 1000:.0f}ms")
+                _first_audio_sent = True
+            if _user_speech_stop_time > 0.0:
+                vad_to_audio = now - _user_speech_stop_time
+                logger.info(f"[LATENCY AUDIT] User speech stopped to first agent audio: {vad_to_audio * 1000:.0f}ms")
+                _user_speech_stop_time = 0.0
+
+    _room_input_options = RoomInputOptions(
+        close_on_disconnect=False,
+        noise_cancellation=noise_cancellation.BVCTelephony(),
+    )
+    _session_kwargs = dict(
+        room=ctx.room,
+        agent=OutboundAssistant(instructions=system_prompt),
+        room_input_options=_room_input_options,
+    )
+
+    t_session_start = time.time()
+    await _log("info", f"[LATENCY AUDIT] Connecting to Live API (session.start) in background at {t_session_start - call_start_time:.2f}s")
+    session_start_task = asyncio.create_task(session.start(**_session_kwargs))
+
+    # ── Dial ──
     if phone_number:
         trunk_id = await get_setting("OUTBOUND_TRUNK_ID")
         if not trunk_id:
@@ -361,11 +441,20 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         _answered_event.set()
 
             try:
-                async def _wait_loop():
-                    while not _answered_event.is_set() and not _failed_event.is_set():
-                        await asyncio.sleep(0.1)
-
-                await asyncio.wait_for(_wait_loop(), timeout=60.0)
+                # Event-driven pickup wait
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.create_task(_answered_event.wait()),
+                        asyncio.create_task(_failed_event.wait()),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=60.0
+                )
+                for p in pending:
+                    p.cancel()
+                    
+                if not done:
+                    raise TimeoutError("Timeout waiting for callee to answer")
                 if _failed_event.is_set():
                     raise RuntimeError(_fail_reason)
             except asyncio.TimeoutError:
@@ -403,90 +492,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 raise exc
             return
         _callee_answer_time = time.time()
-        await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")
+        await _log("info", f"Call ANSWERED — {phone_number} picked up, waiting for AI session to be ready")
         tool_ctx._call_start_time = _callee_answer_time
-        
-        # Start pre-caching CRM contact details in the background immediately
-        from db import get_calls_by_phone, get_appointments_by_phone, get_contact_memory
-        asyncio.create_task(get_calls_by_phone(phone_number))
-        asyncio.create_task(get_appointments_by_phone(phone_number))
-        asyncio.create_task(get_contact_memory(phone_number))
 
-    # ── Build and start Gemini Live ──────────────────────────────────────────
-    t_session_init = time.time()
-    await _log("info", f"[LATENCY AUDIT] Building AI session (model={gemini_model}) at {t_session_init - call_start_time:.2f}s")
-    active_tools = tool_ctx.build_tool_list(enabled_tools)
-    await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
-    session = _build_session(tools=active_tools, system_prompt=system_prompt, gemini_model=gemini_model, gemini_voice=gemini_voice)
-    await _log("info", f"[LATENCY AUDIT] Session object built in {time.time() - t_session_init:.2f}s")
-
-    _user_speech_stop_time = 0.0
-
-    @session.on("generation_created")
-    def _on_generation_created(event):
-        nonlocal _user_speech_stop_time
-        now = time.time()
-        if _user_speech_stop_time > 0.0:
-            reply_latency = now - _user_speech_stop_time
-            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD to response): {reply_latency * 1000:.0f}ms")
-        else:
-            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s")
-
-    @session.on("input_audio_transcription_completed")
-    def _on_input_audio_transcription_completed(event):
-        logger.info(f"[LATENCY AUDIT] User utterance transcription finished: '{event.transcript}' at {time.time() - call_start_time:.2f}s (is_final={event.is_final})")
-
-    @session.on("input_speech_started")
-    def _on_input_speech_started(event):
-        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User started speaking at {time.time() - call_start_time:.2f}s")
-
-    @session.on("input_speech_stopped")
-    def _on_input_speech_stopped(event):
-        nonlocal _user_speech_stop_time
-        _user_speech_stop_time = time.time()
-        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
-
-    @session.on("error")
-    def _on_session_error(error):
-        logger.error(f"Gemini Live session error: {error}")
-        try:
-            asyncio.create_task(log_error("agent", f"Gemini Live session error: {error}", level="error"))
-        except Exception:
-            pass
-
-    _first_audio_sent = False
-
-    @session.on("agent_state_changed")
-    def _on_agent_state_changed(event):
-        nonlocal _first_audio_sent, _user_speech_stop_time
-        new_state = event.new_state
-        now = time.time()
-        if new_state == "speaking":
-            if not _first_audio_sent and _callee_answer_time > 0.0:
-                answer_to_audio = now - _callee_answer_time
-                logger.info(f"[LATENCY AUDIT] Answer to first agent audio sent: {answer_to_audio * 1000:.0f}ms")
-                _first_audio_sent = True
-            if _user_speech_stop_time > 0.0:
-                vad_to_audio = now - _user_speech_stop_time
-                logger.info(f"[LATENCY AUDIT] User speech stopped to first agent audio: {vad_to_audio * 1000:.0f}ms")
-                _user_speech_stop_time = 0.0
-
-    # Pass RoomInputOptions and disable close_on_disconnect
-    _room_input_options = RoomInputOptions(
-        close_on_disconnect=False,
-        noise_cancellation=noise_cancellation.BVCTelephony(),
-    )
-    _session_kwargs = dict(
-        room=ctx.room,
-        agent=OutboundAssistant(instructions=system_prompt),
-        room_input_options=_room_input_options,
-    )
-
-    t_session_start = time.time()
-    await _log("info", f"[LATENCY AUDIT] Connecting to Live API (session.start) at {t_session_start - call_start_time:.2f}s")
-    await session.start(**_session_kwargs)
-    t_session_started = time.time()
-    await _log("info", f"[LATENCY AUDIT] Live API connected / session started in {t_session_started - t_session_start:.2f}s")
+    # Wait for the AI session to finish connecting in the background (if not already done)
+    t_session_await = time.time()
+    await session_start_task
+    t_session_ready = time.time()
+    await _log("info", f"[LATENCY AUDIT] Live API connected / session ready (awaited in background for {t_session_ready - t_session_await:.2f}s)")
     await _log("info", "Agent session started — AI ready, generating greeting")
 
     # Wait 1.2s for media cut-through before speaking
@@ -494,13 +507,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     # Trigger greeting
     try:
-        rt_session = session._activity
         # Check if the model has mutable chat context (Gemini 3.1 Live has mutable_chat_context=False)
-        if rt_session is not None and not getattr(rt_session.realtime_model.capabilities, "mutable_chat_context", True):
+        is_mutable = getattr(session.llm, "capabilities", None) is None or getattr(session.llm.capabilities, "mutable_chat_context", True)
+        if not is_mutable:
             # For Gemini 3.1 Live API, we push the text event directly to the realtime WebSocket channel
-            event = _gt.LiveClientRealtimeInput(text="[SYSTEM: CALL_CONNECTED]")
-            rt_session._send_client_event(event)
-            await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via direct LiveClientRealtimeInput.")
+            # The low-level RealtimeSession is stored in session._activity._rt_session
+            rt_sess = getattr(session._activity, "_rt_session", None)
+            if rt_sess is not None:
+                event = _gt.LiveClientRealtimeInput(text="[SYSTEM: CALL_CONNECTED]")
+                rt_sess._send_client_event(event)
+                await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via direct LiveClientRealtimeInput.")
+            else:
+                await _log("warning", "Could not trigger Gemini 3.1 greeting: rt_session is None")
         else:
             # Fallback for models with mutable chat context (like Gemini 2.5) or pipeline fallback
             await session.generate_reply(user_input="[SYSTEM: CALL_CONNECTED]")
@@ -513,8 +531,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         f"[LATENCY SUMMARY] "
         f"settings={t_session_init - call_start_time:.2f}s | "
         f"session_build={t_session_start - t_session_init:.2f}s | "
-        f"session_connect={t_session_started - t_session_start:.2f}s | "
-        f"total_to_ready={t_session_started - call_start_time:.2f}s"
+        f"session_connect={t_session_ready - t_session_start:.2f}s | "
+        f"total_to_ready={t_session_ready - call_start_time:.2f}s"
     ))
 
     # ── Optional S3 recording (Asynchronous background task) ─────────────────
