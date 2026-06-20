@@ -81,8 +81,9 @@ def load_db_settings_to_env() -> None:
                     if not os.environ.get(k):
                         os.environ[k] = v
                 else:
-                    # Runtime configuration parameters (model, voice, trunk ID): database settings take precedence
-                    os.environ[k] = v
+                    # Only use database settings if Coolify hasn't set them natively
+                    if not os.environ.get(k):
+                        os.environ[k] = v
     except Exception as exc:
         logger.warning("Could not load settings from Supabase: %s", exc)
 
