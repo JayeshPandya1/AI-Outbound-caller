@@ -42,6 +42,9 @@ from tools import AppointmentTools
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("outbound-agent")
 
+# Standalone debugging fallback: forcefully uses this trunk ID instead of Supabase if defined
+FALLBACK_TRUNK_ID: Optional[str] = "ST_ejpBwRGZBqaT"
+
 SIP_DOMAIN = os.getenv("VOBIZ_SIP_DOMAIN", "")
 
 
@@ -371,7 +374,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     # ── Dial ──
     if phone_number:
-        trunk_id = await get_setting("OUTBOUND_TRUNK_ID")
+        trunk_id = FALLBACK_TRUNK_ID or await get_setting("OUTBOUND_TRUNK_ID")
+        logger.info(f"[DEBUG LOG] Pre-dial check: using trunk_id='{trunk_id}' (FALLBACK_TRUNK_ID='{FALLBACK_TRUNK_ID}')")
         if not trunk_id:
             await _log("error", "OUTBOUND_TRUNK_ID not set — cannot place outbound call")
             ctx.shutdown()
