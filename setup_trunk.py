@@ -15,8 +15,8 @@ async def main():
     secret = os.getenv("LIVEKIT_API_SECRET")
     
     sip_domain = os.getenv("VOBIZ_SIP_DOMAIN")
-    username = os.getenv("VOBIZ_USERNAME")
-    password = os.getenv("VOBIZ_PASSWORD")
+    username = os.getenv("VOBIZ_SIP_USERNAME") or os.getenv("VOBIZ_USERNAME")
+    password = os.getenv("VOBIZ_SIP_PASSWORD") or os.getenv("VOBIZ_PASSWORD")
     outbound_number = os.getenv("VOBIZ_OUTBOUND_NUMBER")
 
     if not all([url, key, secret, sip_domain, username, password, outbound_number]):
