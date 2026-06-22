@@ -426,6 +426,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             
             outbound_number = await get_setting("VOBIZ_OUTBOUND_NUMBER")
             from datetime import timedelta
+            logger.info(f"ATTEMPTING TO DIAL WITH TRUNK ID: '{trunk_id}'")
             await ctx.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
                     room_name=ctx.room.name,
