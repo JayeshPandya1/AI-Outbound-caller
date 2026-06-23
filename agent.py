@@ -43,7 +43,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("outbound-agent")
 
 # Standalone debugging fallback: forcefully uses this trunk ID instead of Supabase if defined
-FALLBACK_TRUNK_ID: Optional[str] = "ST_PEhYYqWvsV66"
+FALLBACK_TRUNK_ID: Optional[str] = None
 
 SIP_DOMAIN = os.getenv("VOBIZ_SIP_DOMAIN", "")
 

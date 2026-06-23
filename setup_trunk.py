@@ -26,10 +26,17 @@ async def main():
     if outbound_number and outbound_number.startswith("+"):
         outbound_number = outbound_number[1:]
 
+    # Parse scheme to use HTTPS for API calls
+    if url:
+        api_url = url.replace("wss://", "https://").replace("ws://", "http://")
+    else:
+        api_url = None
+
     print("\n" + "="*50)
     print("--- PRE-FLIGHT DIAGNOSTICS ---")
     print(f"Env File Path:         {env_path}")
     print(f"LIVEKIT_URL:           {url}")
+    print(f"LIVEKIT_API_URL:       {api_url}")
     print(f"LIVEKIT_API_KEY:       {key}")
     print(f"LIVEKIT_API_SECRET:    {'[LOADED]' if secret else '[MISSING]'}")
     print(f"VOBIZ_SIP_DOMAIN:      {sip_domain}")
@@ -65,7 +72,7 @@ async def main():
     
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_ctx)) as session:
         try:
-            lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+            lk = lk_api.LiveKitAPI(url=api_url, api_key=key, api_secret=secret, session=session)
             
             # Construct SIPOutboundTrunkInfo
             trunk_info = lk_api.SIPOutboundTrunkInfo(
@@ -82,18 +89,37 @@ async def main():
             
             print("Registering SIP Outbound Trunk...")
             created_trunk = await lk.sip.create_sip_outbound_trunk(request)
+            new_trunk_id = created_trunk.sip_trunk_id
             
             print("\n" + "="*50)
             print("SUCCESS: SIP Outbound Trunk registered!")
-            print(f"SIP Trunk ID: {created_trunk.sip_trunk_id}")
+            print(f"SIP Trunk ID: {new_trunk_id}")
             print(f"SIP Trunk Name: {created_trunk.name}")
             print(f"Address: {created_trunk.address}")
             print(f"Allowed Numbers: {list(created_trunk.numbers)}")
             print("="*50 + "\n")
             
             await lk.aclose()
+
+            # Automate Supabase Update
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+            if supabase_url and supabase_key:
+                print("Connecting to Supabase and updating settings table...")
+                from supabase import create_client
+                supabase_client = create_client(supabase_url, supabase_key)
+                
+                # Execute UPDATE query against the settings table
+                res = supabase_client.table("settings").update({"value": new_trunk_id}).eq("key", "OUTBOUND_TRUNK_ID").execute()
+                
+                print("SUCCESS: Supabase settings table updated!")
+                print(f"OUTBOUND_TRUNK_ID has been set to: {new_trunk_id}")
+                print("="*50 + "\n")
+            else:
+                print("WARNING: Supabase URL or Key not found in .env. Skipping DB update.")
+            
         except Exception as exc:
-            print(f"Error registering outbound trunk: {exc}")
+            print(f"Error executing recovery sequence: {exc}")
 
 if __name__ == "__main__":
     asyncio.run(main())
