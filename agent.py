@@ -161,8 +161,8 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
     try:
         _realtime_input_cfg = _gt.RealtimeInputConfig(
             automatic_activity_detection=_gt.AutomaticActivityDetection(
-                end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
-                silence_duration_ms=600,
+                end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
+                silence_duration_ms=1000,
                 prefix_padding_ms=200,
             ),
         )
@@ -242,6 +242,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             await _log("warning", "Invalid JSON in job metadata")
 
     await _log("info", f"Call job received — phone={phone_number} lead={lead_name} biz={business_name}")
+    _sip_identity = f"sip_{phone_number}" if phone_number else None
 
     call_db_id = None
     if phone_number:
@@ -291,6 +292,27 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await ctx.connect()
     await _log("info", f"Connected to LiveKit room: {ctx.room.name}")
 
+    # ── Room-level track and participant diagnostic listeners ──────────────────
+    @ctx.room.on("track_published")
+    def _on_room_track_published(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        logger.info(f"[TRACK DIAGNOSTIC] Track PUBLISHED by participant={participant.identity} | Track SID={publication.sid} | Source={publication.source} | Kind={publication.kind}")
+
+    @ctx.room.on("track_subscribed")
+    def _on_room_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        logger.info(f"[TRACK DIAGNOSTIC] Track SUBSCRIBED by participant={participant.identity} | Track SID={publication.sid} | Source={publication.source} | Kind={publication.kind}")
+
+    @ctx.room.on("track_subscription_failed")
+    def _on_room_track_sub_failed(participant: rtc.RemoteParticipant, track_sid: str, error: Exception):
+        logger.error(f"[TRACK DIAGNOSTIC] Track SUBSCRIPTION FAILED for participant={participant.identity} | Track SID={track_sid} | Error={error}")
+
+    @ctx.room.on("participant_connected")
+    def _on_room_participant_connected(participant: rtc.RemoteParticipant):
+        logger.info(f"[TRACK DIAGNOSTIC] Participant CONNECTED: identity={participant.identity} | Kind={participant.kind} | Attributes={participant.attributes}")
+
+    @ctx.room.on("participant_disconnected")
+    def _on_room_participant_disconnected(participant: rtc.RemoteParticipant):
+        logger.info(f"[TRACK DIAGNOSTIC] Participant DISCONNECTED: identity={participant.identity}")
+
     # ── Build and start AI session in the background ──
     t_session_init = time.time()
     await _log("info", f"[LATENCY AUDIT] Building AI session (model={gemini_model}) at {t_session_init - call_start_time:.2f}s")
@@ -301,29 +323,21 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     _user_speech_stop_time = 0.0
 
-    @session.on("generation_created")
-    def _on_generation_created(event):
-        nonlocal _user_speech_stop_time
-        now = time.time()
-        if _user_speech_stop_time > 0.0:
-            reply_latency = now - _user_speech_stop_time
-            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD to response): {reply_latency * 1000:.0f}ms")
-        else:
-            logger.info(f"[LATENCY AUDIT] Model response generation started (id={event.response_id}) at {now - call_start_time:.2f}s")
+    @session.on("user_state_changed")
+    def _on_user_state_changed(event):
+        logger.info(f"[USER STATE] User state changed: {event.old_state} -> {event.new_state}")
 
-    @session.on("input_audio_transcription_completed")
-    def _on_input_audio_transcription_completed(event):
-        logger.info(f"[LATENCY AUDIT] User utterance transcription finished: '{event.transcript}' at {time.time() - call_start_time:.2f}s (is_final={event.is_final})")
+    @session.on("user_input_transcribed")
+    def _on_user_input_transcribed(event):
+        logger.info(f"[TRANSCRIPT] User transcribed: '{event.transcript}' at {time.time() - call_start_time:.2f}s (is_final={event.is_final})")
 
-    @session.on("input_speech_started")
-    def _on_input_speech_started(event):
-        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User started speaking at {time.time() - call_start_time:.2f}s")
+    @session.on("overlapping_speech")
+    def _on_overlapping_speech(event):
+        logger.info(f"[INTERRUPT] Overlapping speech (barge-in): is_interruption={event.is_interruption} | probability={event.probability:.2f} | total_duration={event.total_duration:.2f}s")
 
-    @session.on("input_speech_stopped")
-    def _on_input_speech_stopped(event):
-        nonlocal _user_speech_stop_time
-        _user_speech_stop_time = time.time()
-        logger.info(f"[LATENCY AUDIT] Voice Activity Detector (VAD): User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
+    @session.on("agent_false_interruption")
+    def _on_agent_false_interruption(event):
+        logger.info(f"[INTERRUPT] Agent false interruption: resumed={event.resumed}")
 
     @session.on("error")
     def _on_session_error(error):
@@ -341,6 +355,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         nonlocal _first_audio_sent, _user_speech_stop_time
         new_state = event.new_state
         now = time.time()
+        logger.info(f"[AGENT STATE] Agent state changed: {event.old_state} -> {event.new_state}")
         if new_state == "speaking":
             if not _first_audio_sent and _callee_answer_time > 0.0:
                 answer_to_audio = now - _callee_answer_time
@@ -351,14 +366,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 logger.info(f"[LATENCY AUDIT] User speech stopped to first agent audio: {vad_to_audio * 1000:.0f}ms")
                 _user_speech_stop_time = 0.0
 
-    _room_input_options = RoomInputOptions(
+    from livekit.agents import room_io as _room_io
+    _room_options = _room_io.RoomOptions(
         close_on_disconnect=False,
-        noise_cancellation=noise_cancellation.BVCTelephony(),
+        audio_input=_room_io.AudioInputOptions(
+            noise_cancellation=noise_cancellation.BVCTelephony(),
+        ),
+        participant_identity=_sip_identity,
     )
     _session_kwargs = dict(
         room=ctx.room,
         agent=OutboundAssistant(instructions=system_prompt),
-        room_input_options=_room_input_options,
+        room_options=_room_options,
     )
 
     t_session_start = time.time()
@@ -499,6 +518,43 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await session_start_task
     t_session_ready = time.time()
     await _log("info", f"[LATENCY AUDIT] Live API connected / session ready (awaited in background for {t_session_ready - t_session_await:.2f}s)")
+
+    # ── Track & Participant subscription checks ──
+    try:
+        linked = session.room_io.linked_participant
+        await _log("info", f"[TRACK DIAGNOSTIC] RoomIO is linked to participant: {linked.identity if linked else 'None'} | Kind={linked.kind if linked else 'N/A'}")
+    except Exception as io_exc:
+        await _log("warning", f"[TRACK DIAGNOSTIC] RoomIO linked participant check failed: {io_exc}")
+
+    # ── Bind underlying RealtimeSession events ──
+    rt_sess = getattr(session._activity, "_rt_session", None)
+    if rt_sess is not None:
+        @rt_sess.on("input_speech_started")
+        def _on_rt_input_speech_started(event):
+            logger.info("[VAD DETECT] Server VAD: User started speaking")
+
+        @rt_sess.on("input_speech_stopped")
+        def _on_rt_input_speech_stopped(event):
+            nonlocal _user_speech_stop_time
+            _user_speech_stop_time = time.time()
+            logger.info(f"[VAD DETECT] Server VAD: User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
+
+        @rt_sess.on("generation_created")
+        def _on_rt_generation_created(event):
+            nonlocal _user_speech_stop_time
+            now = time.time()
+            if _user_speech_stop_time > 0.0:
+                reply_latency = now - _user_speech_stop_time
+                logger.info(f"[AUDIO GEN] Agent response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD to response): {reply_latency * 1000:.0f}ms")
+            else:
+                logger.info(f"[AUDIO GEN] Agent response generation started (id={event.response_id}) at {now - call_start_time:.2f}s")
+
+        @rt_sess.on("input_audio_transcription_completed")
+        def _on_rt_input_audio_transcription_completed(event):
+            logger.info(f"[TRANSCRIPT] Underlying User utterance transcription finished: '{event.transcript}' at {time.time() - call_start_time:.2f}s (is_final={event.is_final})")
+    else:
+        await _log("warning", "[TRACK DIAGNOSTIC] Underlying RealtimeSession is None after session start")
+
     await _log("info", "Agent session started — AI ready, generating greeting")
 
     # Wait 1.2s for media cut-through before speaking
