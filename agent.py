@@ -36,11 +36,11 @@ from livekit.plugins import noise_cancellation
 from livekit.plugins import silero
 from google.genai import types as _gt
 
-# Custom Silero VAD configured for high activation threshold to ignore static/echo and avoid barge-in loops
+# Custom Silero VAD configured for extremely high threshold to ignore static/echo and avoid barge-in loops
 custom_vad = silero.VAD.load(
-    activation_threshold=0.7,   # Increased from default to ignore faint static/echo
-    min_speech_duration=0.3,    # Requires 300ms of sustained audio to count as an interruption
-    min_silence_duration=0.6    # Waits longer before deciding the user is finished
+    activation_threshold=0.8,   # Extremely high threshold to block echo
+    min_speech_duration=0.4,    # Requires 400ms of continuous loud audio to open the gate
+    min_silence_duration=0.5
 )
 
 from db import init_db, log_error, get_enabled_tools, get_setting, log_call, update_call_outcome, SENSITIVE_KEYS
@@ -161,9 +161,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
     try:
         _realtime_input_cfg = _gt.RealtimeInputConfig(
             automatic_activity_detection=_gt.AutomaticActivityDetection(
-                end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
-                silence_duration_ms=1000,
-                prefix_padding_ms=200,
+                disabled=True,
             ),
         )
         _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
@@ -171,7 +169,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             trigger_tokens=25600,
             sliding_window=_gt.SlidingWindow(target_tokens=12800),
         )
-        logger.info("Silence-prevention config applied (VAD HIGH, transparent resumption, context compression)")
+        logger.info("Server-side VAD disabled in Gemini Live config. Using local Silero gate.")
     except Exception as _cfg_err:
         logger.warning("Could not build silence-prevention config: %s", _cfg_err)
         _realtime_input_cfg = None
@@ -194,7 +192,10 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
     return AgentSession(
         llm=RealtimeClass(**realtime_kwargs),
         vad=custom_vad,
-        tools=tools
+        tools=tools,
+        turn_handling=dict(
+            turn_detection="vad"
+        )
     )
 
 
