@@ -99,11 +99,9 @@ def load_db_settings_to_env() -> None:
         logger.warning("Could not load settings from Supabase: %s", exc)
 
 
-# ── Import Google plugin paths ───────────────────────────────────────────────
+# ── Import Google Realtime plugin ────────────────────────────────────────────
 _google_realtime = None
 _google_beta_realtime = None
-_google_llm = None
-_google_tts = None
 
 try:
     from livekit.plugins import google as _gp
@@ -117,27 +115,15 @@ try:
         logger.info("Loaded google.beta.realtime.RealtimeModel (beta path)")
     except AttributeError:
         pass
-    try:
-        _google_llm = _gp.LLM
-        _google_tts = _gp.TTS
-    except AttributeError:
-        pass
 except ImportError:
     logger.warning("livekit-plugins-google not installed")
-
-_deepgram_stt = None
-try:
-    from livekit.plugins import deepgram as _dg
-    _deepgram_stt = _dg.STT
-except ImportError:
-    pass
 
 
 # ── Session factory ──────────────────────────────────────────────────────────
 
 def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_voice: str) -> AgentSession:
     """
-    Build AgentSession with Gemini Live or pipeline fallback.
+    Build AgentSession strictly using Gemini Multimodal Live API.
 
     CRITICAL SILENCE-PREVENTION CONFIG — all 3 required:
     1. SessionResumptionConfig(transparent=True) → auto-reconnects after timeout
@@ -163,61 +149,50 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
         else:
             gemini_voice = "Aoede"
 
-    use_realtime = os.getenv("USE_GEMINI_REALTIME", "true").lower() != "false"
+    RealtimeClass = _google_realtime or _google_beta_realtime
 
-    RealtimeClass = _google_realtime or (_google_beta_realtime if use_realtime else None)
-
-    if use_realtime and RealtimeClass is not None:
-        logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
-        try:
-            _realtime_input_cfg = _gt.RealtimeInputConfig(
-                automatic_activity_detection=_gt.AutomaticActivityDetection(
-                    end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=600,
-                    prefix_padding_ms=200,
-                ),
-            )
-            _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
-            _ctx_compression_cfg = _gt.ContextWindowCompressionConfig(
-                trigger_tokens=25600,
-                sliding_window=_gt.SlidingWindow(target_tokens=12800),
-            )
-            logger.info("Silence-prevention config applied (VAD HIGH, transparent resumption, context compression)")
-        except Exception as _cfg_err:
-            logger.warning("Could not build silence-prevention config: %s", _cfg_err)
-            _realtime_input_cfg = None
-            _session_resumption_cfg = None
-            _ctx_compression_cfg = None
-
-        realtime_kwargs: dict = dict(
-            model=gemini_model, voice=gemini_voice, instructions=system_prompt,
-            # PERF: Tuning — lower temperature for faster sampling,
-            # max_output_tokens as safety net to prevent runaway generation.
-            temperature=0.6,
-            max_output_tokens=256,
-            thinking_config=_gt.ThinkingConfig(thinking_level="minimal"),
-        )
-        if _realtime_input_cfg is not None:
-            realtime_kwargs["realtime_input_config"]      = _realtime_input_cfg
-            realtime_kwargs["session_resumption"]         = _session_resumption_cfg
-            realtime_kwargs["context_window_compression"] = _ctx_compression_cfg
-
-        return AgentSession(
-            llm=RealtimeClass(**realtime_kwargs),
-            vad=custom_vad,
-            tools=tools
+    if RealtimeClass is None:
+        raise RuntimeError(
+            "Gemini Live RealtimeModel could not be loaded. "
+            "Ensure 'livekit-plugins-google' package is installed and has RealtimeModel support."
         )
 
-    if _google_llm is None:
-        raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
+    logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
+    try:
+        _realtime_input_cfg = _gt.RealtimeInputConfig(
+            automatic_activity_detection=_gt.AutomaticActivityDetection(
+                end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_HIGH,
+                silence_duration_ms=600,
+                prefix_padding_ms=200,
+            ),
+        )
+        _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
+        _ctx_compression_cfg = _gt.ContextWindowCompressionConfig(
+            trigger_tokens=25600,
+            sliding_window=_gt.SlidingWindow(target_tokens=12800),
+        )
+        logger.info("Silence-prevention config applied (VAD HIGH, transparent resumption, context compression)")
+    except Exception as _cfg_err:
+        logger.warning("Could not build silence-prevention config: %s", _cfg_err)
+        _realtime_input_cfg = None
+        _session_resumption_cfg = None
+        _ctx_compression_cfg = None
 
-    logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS)")
-    stt = _deepgram_stt(model="nova-3", language="multi") if _deepgram_stt else None
-    tts = _google_tts() if _google_tts else None
+    realtime_kwargs: dict = dict(
+        model=gemini_model, voice=gemini_voice, instructions=system_prompt,
+        # PERF: Tuning — lower temperature for faster sampling,
+        # max_output_tokens as safety net to prevent runaway generation.
+        temperature=0.6,
+        max_output_tokens=256,
+        thinking_config=_gt.ThinkingConfig(thinking_level="minimal"),
+    )
+    if _realtime_input_cfg is not None:
+        realtime_kwargs["realtime_input_config"]      = _realtime_input_cfg
+        realtime_kwargs["session_resumption"]         = _session_resumption_cfg
+        realtime_kwargs["context_window_compression"] = _ctx_compression_cfg
+
     return AgentSession(
-        stt=stt,
-        llm=_google_llm(model="gemini-2.0-flash"),
-        tts=tts,
+        llm=RealtimeClass(**realtime_kwargs),
         vad=custom_vad,
         tools=tools
     )
