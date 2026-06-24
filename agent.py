@@ -33,7 +33,15 @@ try:
 except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation
+from livekit.plugins import silero
 from google.genai import types as _gt
+
+# Custom Silero VAD configured for high activation threshold to ignore static/echo and avoid barge-in loops
+custom_vad = silero.VAD.load(
+    activation_threshold=0.7,   # Increased from default to ignore faint static/echo
+    min_speech_duration=0.3,    # Requires 300ms of sustained audio to count as an interruption
+    min_silence_duration=0.6    # Waits longer before deciding the user is finished
+)
 
 from db import init_db, log_error, get_enabled_tools, get_setting, log_call, update_call_outcome, SENSITIVE_KEYS
 from prompts import build_prompt
@@ -194,7 +202,12 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             realtime_kwargs["session_resumption"]         = _session_resumption_cfg
             realtime_kwargs["context_window_compression"] = _ctx_compression_cfg
 
-        return AgentSession(llm=RealtimeClass(**realtime_kwargs), tools=tools)
+        return AgentSession(
+            llm=RealtimeClass(**realtime_kwargs),
+            vad=custom_vad,
+            allow_interruptions=False,
+            tools=tools
+        )
 
     if _google_llm is None:
         raise RuntimeError("No Google AI backend. Run: pip install 'livekit-plugins-google>=1.0'")
@@ -202,7 +215,14 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
     logger.info("SESSION MODE: pipeline (Deepgram STT + Gemini LLM + Google TTS)")
     stt = _deepgram_stt(model="nova-3", language="multi") if _deepgram_stt else None
     tts = _google_tts() if _google_tts else None
-    return AgentSession(stt=stt, llm=_google_llm(model="gemini-2.0-flash"), tts=tts, vad=None, tools=tools)
+    return AgentSession(
+        stt=stt,
+        llm=_google_llm(model="gemini-2.0-flash"),
+        tts=tts,
+        vad=custom_vad,
+        allow_interruptions=False,
+        tools=tools
+    )
 
 
 class OutboundAssistant(Agent):
