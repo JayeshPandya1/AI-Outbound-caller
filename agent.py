@@ -205,7 +205,6 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
         return AgentSession(
             llm=RealtimeClass(**realtime_kwargs),
             vad=custom_vad,
-            allow_interruptions=False,
             tools=tools
         )
 
@@ -220,7 +219,6 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
         llm=_google_llm(model="gemini-2.0-flash"),
         tts=tts,
         vad=custom_vad,
-        allow_interruptions=False,
         tools=tools
     )
 
