@@ -12,7 +12,7 @@ import logging
 import os
 import ssl
 import certifi
-from typing import Optional
+from typing import Optional, AsyncIterable, Any
 
 from dotenv import load_dotenv
 load_dotenv(".env", override=False)  # MUST be first — before any module that reads os.getenv at import time
@@ -26,7 +26,7 @@ def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
 ssl.create_default_context = _certifi_ssl
 
 from livekit import agents, api, rtc
-from livekit.agents import Agent, AgentSession, RoomInputOptions
+from livekit.agents import Agent, AgentSession, RoomInputOptions, io as agents_io
 try:
     from livekit.agents import RoomOptions as _RoomOptions
     _HAS_ROOM_OPTIONS = True
@@ -36,12 +36,33 @@ from livekit.plugins import noise_cancellation
 from livekit.plugins import silero
 from google.genai import types as _gt
 
-# Custom Silero VAD configured for extremely high threshold to ignore static/echo and avoid barge-in loops
+# Custom Silero VAD configured for high activation threshold to ignore static/echo and avoid barge-in loops
 custom_vad = silero.VAD.load(
-    activation_threshold=0.8,   # Extremely high threshold to block echo
-    min_speech_duration=0.4,    # Requires 400ms of continuous loud audio to open the gate
-    min_silence_duration=0.5
+    activation_threshold=0.7,   # Increased from default to ignore faint static/echo
+    min_speech_duration=0.3,    # Requires 300ms of sustained audio to count as an interruption
+    min_silence_duration=0.6    # Waits longer before deciding the user is finished
 )
+
+class EchoCancelledAudioInput(agents_io.AudioInput):
+    def __init__(self, source: agents_io.AudioInput, apm: rtc.AudioProcessingModule):
+        super().__init__(label="echo_cancelled_input", source=source)
+        self.apm = apm
+
+    async def __anext__(self) -> rtc.AudioFrame:
+        frame = await self.source.__anext__()
+        # Ensure frame duration is a multiple of 10ms
+        samples_per_10ms = frame.sample_rate // 100
+        total_10ms_samples = (frame.samples_per_channel // samples_per_10ms) * samples_per_10ms
+        if total_10ms_samples > 0:
+            data_len = total_10ms_samples * frame.num_channels * 2
+            temp_data = bytearray(frame.data[:data_len])
+            clean_frame = rtc.AudioFrame(temp_data, frame.sample_rate, frame.num_channels, total_10ms_samples)
+            
+            # Estimate round-trip audio path latency
+            self.apm.set_stream_delay_ms(120)
+            self.apm.process_stream(clean_frame)
+            return clean_frame
+        return frame
 
 from db import init_db, log_error, get_enabled_tools, get_setting, log_call, update_call_outcome, SENSITIVE_KEYS
 from prompts import build_prompt
@@ -161,7 +182,9 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
     try:
         _realtime_input_cfg = _gt.RealtimeInputConfig(
             automatic_activity_detection=_gt.AutomaticActivityDetection(
-                disabled=True,
+                end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
+                silence_duration_ms=1000,
+                prefix_padding_ms=200,
             ),
         )
         _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
@@ -169,7 +192,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             trigger_tokens=25600,
             sliding_window=_gt.SlidingWindow(target_tokens=12800),
         )
-        logger.info("Server-side VAD disabled in Gemini Live config. Using local Silero gate.")
+        logger.info("Silence-prevention config applied (VAD HIGH, transparent resumption, context compression)")
     except Exception as _cfg_err:
         logger.warning("Could not build silence-prevention config: %s", _cfg_err)
         _realtime_input_cfg = None
@@ -192,16 +215,30 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
     return AgentSession(
         llm=RealtimeClass(**realtime_kwargs),
         vad=custom_vad,
-        tools=tools,
-        turn_handling=dict(
-            turn_detection="vad"
-        )
+        tools=tools
     )
 
 
 class OutboundAssistant(Agent):
-    def __init__(self, instructions: str) -> None:
+    def __init__(self, instructions: str, apm: Optional[rtc.AudioProcessingModule] = None) -> None:
         super().__init__(instructions=instructions)
+        self.apm = apm
+
+    def realtime_audio_output_node(
+        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: Any
+    ) -> AsyncIterable[rtc.AudioFrame]:
+        async def _filter():
+            async for frame in audio:
+                if self.apm is not None:
+                    samples_per_10ms = frame.sample_rate // 100
+                    total_10ms_samples = (frame.samples_per_channel // samples_per_10ms) * samples_per_10ms
+                    if total_10ms_samples > 0:
+                        data_len = total_10ms_samples * frame.num_channels * 2
+                        temp_data = bytearray(frame.data[:data_len])
+                        ref_frame = rtc.AudioFrame(temp_data, frame.sample_rate, frame.num_channels, total_10ms_samples)
+                        self.apm.process_reverse_stream(ref_frame)
+                yield frame
+        return _filter()
 
 
 async def entrypoint(ctx: agents.JobContext) -> None:
@@ -367,6 +404,14 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 logger.info(f"[LATENCY AUDIT] User speech stopped to first agent audio: {vad_to_audio * 1000:.0f}ms")
                 _user_speech_stop_time = 0.0
 
+    # Initialize WebRTC Audio Processing Module (APM) for Acoustic Echo Cancellation (AEC)
+    apm = rtc.AudioProcessingModule(
+        echo_cancellation=True,
+        noise_suppression=True,
+        high_pass_filter=True,
+        auto_gain_control=True
+    )
+
     from livekit.agents import room_io as _room_io
     _room_options = _room_io.RoomOptions(
         close_on_disconnect=False,
@@ -377,7 +422,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     )
     _session_kwargs = dict(
         room=ctx.room,
-        agent=OutboundAssistant(instructions=system_prompt),
+        agent=OutboundAssistant(instructions=system_prompt, apm=apm),
         room_options=_room_options,
     )
 
@@ -517,6 +562,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # Wait for the AI session to finish connecting in the background (if not already done)
     t_session_await = time.time()
     await session_start_task
+
+    # Inject custom EchoCancelledAudioInput wrap to intercept SIP participant capture stream
+    if session.input.audio is not None:
+        session.input.audio = EchoCancelledAudioInput(session.input.audio, apm)
+        logger.info("Custom WebRTC APM AEC filter successfully injected into session input audio stream.")
+
     t_session_ready = time.time()
     await _log("info", f"[LATENCY AUDIT] Live API connected / session ready (awaited in background for {t_session_ready - t_session_await:.2f}s)")
 
