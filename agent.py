@@ -38,15 +38,9 @@ try:
 except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation
-from livekit.plugins import silero
 from google.genai import types as _gt
 
-# Custom Silero VAD configured for high activation threshold to ignore static/echo and avoid barge-in loops
-custom_vad = silero.VAD.load(
-    activation_threshold=0.7,   # Increased from default to ignore faint static/echo
-    min_speech_duration=0.3,    # Requires 300ms of sustained audio to count as an interruption
-    min_silence_duration=0.6    # Waits longer before deciding the user is finished
-)
+
 
 class GateFilteredAudioInput(agents_io.AudioInput):
     def __init__(self, source: agents_io.AudioInput, threshold: float = 150.0):
@@ -232,7 +226,6 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
 
     return AgentSession(
         llm=RealtimeClass(**realtime_kwargs),
-        vad=custom_vad,
         tools=tools
     )
 
