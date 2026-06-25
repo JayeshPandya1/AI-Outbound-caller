@@ -13,6 +13,11 @@ import os
 import ssl
 import certifi
 from typing import Optional
+import numpy as np
+try:
+    import audioop
+except ImportError:
+    audioop = None
 
 from dotenv import load_dotenv
 load_dotenv(".env", override=False)  # MUST be first — before any module that reads os.getenv at import time
@@ -26,7 +31,7 @@ def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
 ssl.create_default_context = _certifi_ssl
 
 from livekit import agents, api, rtc
-from livekit.agents import Agent, AgentSession, RoomInputOptions
+from livekit.agents import Agent, AgentSession, RoomInputOptions, io as agents_io
 try:
     from livekit.agents import RoomOptions as _RoomOptions
     _HAS_ROOM_OPTIONS = True
@@ -42,6 +47,31 @@ custom_vad = silero.VAD.load(
     min_speech_duration=0.3,    # Requires 300ms of sustained audio to count as an interruption
     min_silence_duration=0.6    # Waits longer before deciding the user is finished
 )
+
+class GateFilteredAudioInput(agents_io.AudioInput):
+    def __init__(self, source: agents_io.AudioInput, threshold: float = 150.0):
+        super().__init__(label="gate_filtered_input", source=source)
+        self.threshold = threshold
+
+    async def __anext__(self) -> rtc.AudioFrame:
+        frame = await self.source.__anext__()
+        try:
+            if audioop is not None:
+                rms = audioop.rms(frame.data, 2)
+            else:
+                samples = np.frombuffer(frame.data, dtype=np.int16)
+                rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) if len(samples) > 0 else 0.0
+            
+            if rms < self.threshold:
+                return rtc.AudioFrame(
+                    b'\x00' * len(frame.data),
+                    frame.sample_rate,
+                    frame.num_channels,
+                    frame.samples_per_channel
+                )
+        except Exception as e:
+            logger.warning(f"Error in RMS noise gate calculation: {e}")
+        return frame
 
 
 from db import init_db, log_error, get_enabled_tools, get_setting, log_call, update_call_outcome, SENSITIVE_KEYS
@@ -276,9 +306,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     _model_coro = get_setting("GEMINI_MODEL", "gemini-3.1-flash-live-preview") if not model_override else _noop()
     _voice_coro = get_setting("GEMINI_TTS_VOICE", "Aoede") if not voice_override else _noop()
     _tools_coro = get_enabled_tools() if not tools_override else _noop()
-    _model_r, _voice_r, _tools_r = await asyncio.gather(_model_coro, _voice_coro, _tools_coro)
+    _gate_coro = get_setting("SIP_GATE_THRESHOLD", "150.0")
+    _model_r, _voice_r, _tools_r, _gate_r = await asyncio.gather(
+        _model_coro, _voice_coro, _tools_coro, _gate_coro
+    )
     gemini_model = model_override or _model_r
     gemini_voice = voice_override or _voice_r
+    
+    threshold_val = os.getenv("SIP_GATE_THRESHOLD", _gate_r)
+    try:
+        silence_threshold = float(threshold_val)
+    except ValueError:
+        silence_threshold = 150.0
     if tools_override:
         try:
             enabled_tools = json.loads(tools_override)
@@ -518,7 +557,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     t_session_await = time.time()
     await session_start_task
 
-
+    # Inject lightweight RMS noise gate filter to suppress SIP trunk line static/hiss
+    if session.input.audio is not None:
+        session.input.audio = GateFilteredAudioInput(session.input.audio, threshold=silence_threshold)
+        logger.info(f"RMS noise gate filter successfully injected into session input audio stream (threshold={silence_threshold}).")
 
     t_session_ready = time.time()
     await _log("info", f"[LATENCY AUDIT] Live API connected / session ready (awaited in background for {t_session_ready - t_session_await:.2f}s)")
