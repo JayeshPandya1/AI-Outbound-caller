@@ -56,21 +56,29 @@ class GateFilteredAudioInput(agents_io.AudioInput):
     async def __anext__(self) -> rtc.AudioFrame:
         frame = await self.source.__anext__()
         try:
+            data_bytes = frame.data
+            align_size = frame.num_channels * 2
+            
+            # Safely pass through misaligned or empty audio fragments
+            if len(data_bytes) == 0 or len(data_bytes) % align_size != 0:
+                return frame
+
             if audioop is not None:
-                rms = audioop.rms(frame.data, 2)
+                rms = audioop.rms(data_bytes, 2)
             else:
-                samples = np.frombuffer(frame.data, dtype=np.int16)
+                samples = np.frombuffer(data_bytes, dtype=np.int16)
                 rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) if len(samples) > 0 else 0.0
             
             if rms < self.threshold:
+                samples_per_channel = len(data_bytes) // align_size
                 return rtc.AudioFrame(
-                    b'\x00' * len(frame.data),
+                    b'\x00' * len(data_bytes),
                     frame.sample_rate,
                     frame.num_channels,
-                    frame.samples_per_channel
+                    samples_per_channel
                 )
-        except Exception as e:
-            logger.warning(f"Error in RMS noise gate calculation: {e}")
+        except Exception:
+            pass  # Silent safety fallback to prevent blocking/logging in the tight audio loop
         return frame
 
 
