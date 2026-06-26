@@ -201,8 +201,8 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
         )
         _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
         _ctx_compression_cfg = _gt.ContextWindowCompressionConfig(
-            trigger_tokens=25600,
-            sliding_window=_gt.SlidingWindow(target_tokens=12800),
+            trigger_tokens=10000,
+            sliding_window=_gt.SlidingWindow(target_tokens=5000),
         )
         logger.info("Silence-prevention config applied (VAD HIGH, transparent resumption, context compression)")
     except Exception as _cfg_err:
@@ -216,7 +216,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
         # PERF: Tuning — lower temperature for faster sampling,
         # max_output_tokens as safety net to prevent runaway generation.
         temperature=0.6,
-        max_output_tokens=256,
+        max_output_tokens=1024,
         thinking_config=_gt.ThinkingConfig(thinking_level="minimal"),
     )
     if _realtime_input_cfg is not None:
