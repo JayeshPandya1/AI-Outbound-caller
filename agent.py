@@ -360,6 +360,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
     session = _build_session(tools=active_tools, system_prompt=system_prompt, gemini_model=gemini_model, gemini_voice=gemini_voice)
+    if session.input.audio is not None:
+        session.input.audio = GateFilteredAudioInput(session.input.audio, threshold=silence_threshold)
+        logger.info(f"RMS noise gate filter successfully injected into session input audio stream (threshold={silence_threshold}) BEFORE session start.")
     await _log("info", f"[LATENCY AUDIT] Session object built in {time.time() - t_session_init:.2f}s")
 
     _user_speech_stop_time = 0.0
@@ -557,11 +560,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # Wait for the AI session to finish connecting in the background (if not already done)
     t_session_await = time.time()
     await session_start_task
-
-    # Inject lightweight RMS noise gate filter to suppress SIP trunk line static/hiss
-    if session.input.audio is not None:
-        session.input.audio = GateFilteredAudioInput(session.input.audio, threshold=silence_threshold)
-        logger.info(f"RMS noise gate filter successfully injected into session input audio stream (threshold={silence_threshold}).")
 
     t_session_ready = time.time()
     await _log("info", f"[LATENCY AUDIT] Live API connected / session ready (awaited in background for {t_session_ready - t_session_await:.2f}s)")
