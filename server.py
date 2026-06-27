@@ -443,8 +443,8 @@ async def api_get_active_rooms():
 # ── Calls ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/calls")
-async def api_get_calls(page: int = 1, limit: int = 20):
-    return await get_all_calls(page=page, limit=limit)
+async def api_get_calls(page: int = 1, limit: int = 20, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    return await get_all_calls(page=page, limit=limit, start_date=start_date, end_date=end_date)
 
 
 @app.patch("/api/calls/{call_id}/notes")
@@ -458,8 +458,8 @@ async def api_update_notes(call_id: str, req: NotesRequest):
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/stats")
-async def api_get_stats():
-    return await get_stats()
+async def api_get_stats(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    return await get_stats(start_date=start_date, end_date=end_date)
 
 
 # ── Appointments ──────────────────────────────────────────────────────────────

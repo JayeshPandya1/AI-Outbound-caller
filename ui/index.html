@@ -513,7 +513,24 @@
 
     <!-- STATS TAB -->
     <div id="tab-stats" class="tab-content active">
-      <h2>Dashboard Overview</h2>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+        <h2 style="margin: 0;">Dashboard Overview</h2>
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <select id="date-filter-preset" onchange="handlePresetFilterChange()" style="padding: 8px 12px; background: var(--bg2); border: 1px solid rgba(197, 168, 128, 0.2); border-radius: 6px; color: var(--text1); cursor: pointer; outline: none;">
+            <option value="today" selected>Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="last-week">Last Week</option>
+            <option value="last-month">Last Month</option>
+            <option value="custom">Custom Range</option>
+            <option value="all">All Time</option>
+          </select>
+          <div id="custom-date-range-container" style="display: none; align-items: center; gap: 5px;">
+            <input type="date" id="filter-start-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--bg2); border: 1px solid rgba(197, 168, 128, 0.2); border-radius: 6px; color: var(--text1);" />
+            <span class="text2">to</span>
+            <input type="date" id="filter-end-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--bg2); border: 1px solid rgba(197, 168, 128, 0.2); border-radius: 6px; color: var(--text1);" />
+          </div>
+        </div>
+      </div>
 
       <div class="card">
         <h3>Active Configuration</h3>
@@ -1044,11 +1061,93 @@
 
     const formatDt = (iso) => iso ? new Date(iso).toLocaleString() : '';
 
+    // -- Stats Filter Logic
+    let _filterStartDate = '';
+    let _filterEndDate = '';
+
+    function updateFilterDates() {
+      const preset = $('date-filter-preset').value;
+      const customContainer = $('custom-date-range-container');
+      
+      if (preset === 'custom') {
+        customContainer.style.display = 'flex';
+        _filterStartDate = $('filter-start-date').value ? $('filter-start-date').value + 'T00:00:00Z' : '';
+        _filterEndDate = $('filter-end-date').value ? $('filter-end-date').value + 'T23:59:59Z' : '';
+      } else {
+        customContainer.style.display = 'none';
+        
+        const now = new Date();
+        const yyyy = now.getFullYear();
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const todayStr = `${yyyy}-${mm}-${dd}`;
+
+        if (preset === 'today') {
+          _filterStartDate = todayStr + 'T00:00:00Z';
+          _filterEndDate = todayStr + 'T23:59:59Z';
+        } else if (preset === 'yesterday') {
+          const yesterday = new Date(now);
+          yesterday.setDate(now.getDate() - 1);
+          const y_yyyy = yesterday.getFullYear();
+          const y_mm = String(yesterday.getMonth() + 1).padStart(2, '0');
+          const y_dd = String(yesterday.getDate()).padStart(2, '0');
+          const yesterdayStr = `${y_yyyy}-${y_mm}-${y_dd}`;
+          
+          _filterStartDate = yesterdayStr + 'T00:00:00Z';
+          _filterEndDate = yesterdayStr + 'T23:59:59Z';
+        } else if (preset === 'last-week') {
+          const lastWeek = new Date(now);
+          lastWeek.setDate(now.getDate() - 7);
+          const lw_yyyy = lastWeek.getFullYear();
+          const lw_mm = String(lastWeek.getMonth() + 1).padStart(2, '0');
+          const lw_dd = String(lastWeek.getDate()).padStart(2, '0');
+          
+          _filterStartDate = `${lw_yyyy}-${lw_mm}-${lw_dd}T00:00:00Z`;
+          _filterEndDate = todayStr + 'T23:59:59Z';
+        } else if (preset === 'last-month') {
+          const lastMonth = new Date(now);
+          lastMonth.setDate(now.getDate() - 30);
+          const lm_yyyy = lastMonth.getFullYear();
+          const lm_mm = String(lastMonth.getMonth() + 1).padStart(2, '0');
+          const lm_dd = String(lastMonth.getDate()).padStart(2, '0');
+          
+          _filterStartDate = `${lm_yyyy}-${lm_mm}-${lm_dd}T00:00:00Z`;
+          _filterEndDate = todayStr + 'T23:59:59Z';
+        } else {
+          // 'all'
+          _filterStartDate = '';
+          _filterEndDate = '';
+        }
+      }
+    }
+
+    async function handlePresetFilterChange() {
+      updateFilterDates();
+      await loadStats();
+      if ($('tab-logs').classList.contains('active')) {
+        _logPage = 1;
+        await loadCalls();
+      }
+    }
+
+    async function handleCustomDateChange() {
+      updateFilterDates();
+      await loadStats();
+      if ($('tab-logs').classList.contains('active')) {
+        _logPage = 1;
+        await loadCalls();
+      }
+    }
+
     // -- Stats
     let _cTimeline, _cOutcomes;
     async function loadStats() {
       try {
-        const d = await api('/api/stats');
+        let url = '/api/stats';
+        if (_filterStartDate || _filterEndDate) {
+          url += `?start_date=${encodeURIComponent(_filterStartDate)}&end_date=${encodeURIComponent(_filterEndDate)}`;
+        }
+        const d = await api(url);
         $('s-calls').textContent = d.total_calls;
         $('s-booked').textContent = d.booked;
         $('s-rate').textContent = d.booking_rate_percent + '%';
@@ -1645,7 +1744,10 @@
 
     async function loadCalls() {
       try {
-        const res = await api(`/api/calls?page=${_logPage}&limit=20`);
+        let url = `/api/calls?page=${_logPage}&limit=20`;
+        if (_filterStartDate) url += `&start_date=${encodeURIComponent(_filterStartDate)}`;
+        if (_filterEndDate) url += `&end_date=${encodeURIComponent(_filterEndDate)}`;
+        const res = await api(url);
         const tb = $('tbl-calls').querySelector('tbody');
         tb.innerHTML = '';
         res.forEach(c => {
@@ -1765,6 +1867,7 @@
     setInterval(() => { if ($('tab-syslogs').classList.contains('active')) loadSyslogs(); }, 10000);
 
     window.addEventListener('DOMContentLoaded', () => {
+      updateFilterDates();
       loadStats();
       loadAgentProfiles();
       loadSettings();
