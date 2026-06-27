@@ -301,6 +301,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     _sip_identity = f"sip_{phone_number}" if phone_number else None
 
     call_db_id = None
+    history_task = None
     if phone_number:
         try:
             call_db_id = await log_call(
@@ -312,17 +313,52 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             )
             logger.info(f"Initialized call log in Supabase with ID: {call_db_id}")
             
-            # Start pre-caching CRM contact details in the background immediately
+            # Start pre-fetching CRM contact details in the background immediately
             from db import get_calls_by_phone, get_appointments_by_phone, get_contact_memory
-            asyncio.create_task(get_calls_by_phone(phone_number))
-            asyncio.create_task(get_appointments_by_phone(phone_number))
-            asyncio.create_task(get_contact_memory(phone_number))
+            async def _fetch_history():
+                try:
+                    c, a, m = await asyncio.gather(
+                        get_calls_by_phone(phone_number),
+                        get_appointments_by_phone(phone_number),
+                        get_contact_memory(phone_number)
+                    )
+                    return c, a, m
+                except Exception as exc:
+                    logger.error("Failed to pre-fetch history in background: %s", exc)
+                    return [], [], []
+            history_task = asyncio.create_task(_fetch_history())
         except Exception as log_exc:
             logger.error("Failed to initialize call log: %s", log_exc)
 
+    history_context = ""
+    if history_task:
+        try:
+            calls, appointments, memories = await history_task
+            if calls or appointments or memories:
+                lines = [f"\nCUSTOMER CONTACT HISTORY (PRE-LOADED):"]
+                if memories:
+                    lines.append(f"Remembered notes:")
+                    for m in memories[:10]:
+                        lines.append(f"  • {m['insight']}")
+                if calls:
+                    lines.append(f"Call history:")
+                    for c in calls[:5]:
+                        ts = (c.get("timestamp") or "")[:16]
+                        lines.append(f"  • {ts} — {c.get('outcome','?')}: {c.get('reason','')}")
+                if appointments:
+                    lines.append(f"Appointments:")
+                    for a in appointments[:3]:
+                        lines.append(f"  • {a.get('date')} {a.get('time')} — {a.get('service')} [{a.get('status')}]")
+                history_context = "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error formatting preloaded history: {e}")
+
     system_prompt = build_prompt(lead_name=lead_name, business_name=business_name,
                                   service_type=service_type, custom_prompt=custom_prompt)
-    tool_ctx = AppointmentTools(ctx, phone_number, lead_name, call_db_id=call_db_id)
+    if history_context:
+        system_prompt += f"\n\n{history_context}\n(Do NOT call lookup_contact, you already have the history above.)"
+
+    tool_ctx = AppointmentTools(ctx, phone_number, lead_name, call_db_id=call_db_id, cached_history=history_context)
 
     # PERF FIX #2: Parallelize all DB lookups with asyncio.gather()
     # Before: 3 sequential get_setting() calls = 0.6-1.5s of serial round-trips.
