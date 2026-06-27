@@ -193,23 +193,23 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
     logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
     try:
         # Get VAD parameters from env (configured via Coolify or .env)
-        vad_sens_str = os.getenv("GEMINI_VAD_SENSITIVITY", "STANDARD").upper()
+        vad_sens_str = os.getenv("GEMINI_VAD_SENSITIVITY", "LOW").upper()
         if vad_sens_str == "HIGH":
             sens_enum = _gt.EndSensitivity.END_SENSITIVITY_HIGH
-        elif vad_sens_str == "LOW":
-            sens_enum = _gt.EndSensitivity.END_SENSITIVITY_LOW
-        else:
+        elif vad_sens_str == "STANDARD":
             sens_enum = _gt.EndSensitivity.END_SENSITIVITY_STANDARD
+        else:
+            sens_enum = _gt.EndSensitivity.END_SENSITIVITY_LOW
 
         try:
-            silence_ms = int(os.getenv("GEMINI_VAD_SILENCE_MS", "600"))
+            silence_ms = int(os.getenv("GEMINI_VAD_SILENCE_MS", "1000"))
         except ValueError:
-            silence_ms = 600
+            silence_ms = 1000
 
         try:
-            padding_ms = int(os.getenv("GEMINI_VAD_PADDING_MS", "200"))
+            padding_ms = int(os.getenv("GEMINI_VAD_PADDING_MS", "300"))
         except ValueError:
-            padding_ms = 200
+            padding_ms = 300
 
         _realtime_input_cfg = _gt.RealtimeInputConfig(
             automatic_activity_detection=_gt.AutomaticActivityDetection(
