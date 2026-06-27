@@ -640,12 +640,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         is_mutable = getattr(session.llm, "capabilities", None) is None or getattr(session.llm.capabilities, "mutable_chat_context", True)
         if not is_mutable:
             # For Gemini 3.1 Live API, we push the text event directly to the realtime WebSocket channel
-            # The low-level RealtimeSession is stored in session._activity._rt_session
+            # using LiveClientContent with turn_complete=True to force immediate generation.
             rt_sess = getattr(session._activity, "_rt_session", None)
             if rt_sess is not None:
-                event = _gt.LiveClientRealtimeInput(text="[SYSTEM: CALL_CONNECTED]")
+                turns = [
+                    _gt.Content(
+                        role="user",
+                        parts=[_gt.Part(text="[SYSTEM: CALL_CONNECTED]")]
+                    )
+                ]
+                event = _gt.LiveClientContent(turns=turns, turn_complete=True)
                 rt_sess._send_client_event(event)
-                await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via direct LiveClientRealtimeInput.")
+                await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via direct LiveClientContent.")
             else:
                 await _log("warning", "Could not trigger Gemini 3.1 greeting: rt_session is None")
         else:
