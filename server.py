@@ -462,6 +462,35 @@ async def api_get_stats():
     return await get_stats()
 
 
+@app.get("/api/version-check")
+async def api_version_check():
+    import importlib.metadata
+    
+    CONFIRMED_VERSIONS = {
+        "livekit-agents": "1.5.17",
+        "livekit-plugins-google": "1.5.17"
+    }
+    
+    status = "ok"
+    warnings = []
+    
+    for pkg, conf_ver in CONFIRMED_VERSIONS.items():
+        try:
+            installed = importlib.metadata.version(pkg)
+            if installed != conf_ver:
+                warnings.append({
+                    "package": pkg,
+                    "installed": installed,
+                    "confirmed": conf_ver
+                })
+                status = "warning"
+        except Exception as e:
+            logger.warning(f"Could not check version for {pkg}: {e}")
+            
+    return {"status": status, "warnings": warnings}
+
+
+
 # ── Appointments ──────────────────────────────────────────────────────────────
 
 @app.get("/api/appointments")

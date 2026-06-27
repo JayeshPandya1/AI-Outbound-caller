@@ -83,6 +83,29 @@ from tools import AppointmentTools
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("outbound-agent")
 
+def _check_package_versions():
+    import importlib.metadata
+    
+    CONFIRMED_VERSIONS = {
+        "livekit-agents": "1.5.17",
+        "livekit-plugins-google": "1.5.17"
+    }
+    
+    for pkg, conf_ver in CONFIRMED_VERSIONS.items():
+        try:
+            installed = importlib.metadata.version(pkg)
+            if installed != conf_ver:
+                logger.warning(
+                    f"\n⚠️  [VERSION GUARD] {pkg} version mismatch! "
+                    f"Confirmed compatible: {conf_ver} | Installed: {installed}. "
+                    f"A newer version might introduce breaking changes. Monitor behavior closely.\n"
+                    f"Changelog reference: https://github.com/livekit/agents/releases/tag/v{installed}\n"
+                )
+            else:
+                logger.info(f"✅ [VERSION GUARD] {pkg}={conf_ver} (confirmed compatible)")
+        except Exception as e:
+            logger.warning(f"Could not verify version for {pkg}: {e}")
+
 # Standalone debugging fallback: forcefully uses this trunk ID instead of Supabase if defined
 FALLBACK_TRUNK_ID: Optional[str] = None
 
@@ -248,6 +271,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     Instead, watch participant_disconnected event for the specific SIP identity.
     """
     await _log("info", f"Job started — room: {ctx.room.name}")
+    _check_package_versions()
 
     phone_number: Optional[str] = None
     lead_name = "there"
@@ -610,13 +634,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         # Check if the model has mutable chat context (Gemini 3.1 Live has mutable_chat_context=False)
         is_mutable = getattr(session.llm, "capabilities", None) is None or getattr(session.llm.capabilities, "mutable_chat_context", True)
         if not is_mutable:
-            # For Gemini 3.1 Live API, we push the text event directly to the realtime WebSocket channel
-            # The low-level RealtimeSession is stored in session._activity._rt_session
+            # For Gemini 3.1 Live API under livekit-plugins-google>=1.5.17, we must manually
+            # register a future in rt_sess._pending_generation_fut before sending LiveClientContent,
+            # mirroring what generate_reply() does internally. Bypasses the mutable_chat_context check.
             rt_sess = getattr(session._activity, "_rt_session", None)
             if rt_sess is not None:
-                event = _gt.LiveClientRealtimeInput(text="[SYSTEM: CALL_CONNECTED]")
+                fut = asyncio.get_event_loop().create_future()
+                rt_sess._pending_generation_fut = fut
+                
+                turns = [_gt.Content(role="user", parts=[_gt.Part(text="[SYSTEM: CALL_CONNECTED]")])]
+                event = _gt.LiveClientContent(turns=turns, turn_complete=True)
                 rt_sess._send_client_event(event)
-                await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via direct LiveClientRealtimeInput.")
+                await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via manual _pending_generation_fut registration.")
             else:
                 await _log("warning", "Could not trigger Gemini 3.1 greeting: rt_session is None")
         else:

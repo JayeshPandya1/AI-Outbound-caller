@@ -485,6 +485,30 @@
     ::-webkit-scrollbar-thumb:hover {
       background: rgba(197, 168, 128, 0.5);
     }
+    
+    /* Alert Banner for Version Warnings */
+    .alert-banner {
+      background: rgba(217, 119, 6, 0.1);
+      color: var(--warn);
+      border: 1px solid var(--warn);
+      padding: 12px 16px;
+      border-radius: var(--r);
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+    }
+    .alert-banner-close {
+      cursor: pointer;
+      opacity: 0.6;
+      font-weight: bold;
+      margin-left: 15px;
+      user-select: none;
+    }
+    .alert-banner-close:hover {
+      opacity: 1;
+    }
 </style>
 </head>
 
@@ -510,6 +534,9 @@
   </div>
 
   <div class="main">
+
+    <!-- Version Warning Alert Banner -->
+    <div id="version-warning-banner" style="display:none;"></div>
 
     <!-- STATS TAB -->
     <div id="tab-stats" class="tab-content active">
@@ -1764,10 +1791,33 @@
     }
     setInterval(() => { if ($('tab-syslogs').classList.contains('active')) loadSyslogs(); }, 10000);
 
+    async function checkSystemVersions() {
+      try {
+        const res = await api('/api/version-check');
+        const banner = $('version-warning-banner');
+        if (res.status === 'warning' && res.warnings.length > 0) {
+          const messages = res.warnings.map(w => 
+            `⚠️ <strong>System Update:</strong> <code>${w.package}</code> version changed from verified <code>${w.confirmed}</code> to <code>${w.installed}</code>.`
+          ).join('<br>');
+          banner.innerHTML = `
+            <div style="flex-grow: 1; line-height: 1.6;">${messages}</div>
+            <div class="alert-banner-close" onclick="$('version-warning-banner').style.display='none'">✕</div>
+          `;
+          banner.className = 'alert-banner';
+          banner.style.display = 'flex';
+        } else {
+          banner.style.display = 'none';
+        }
+      } catch (e) {
+        console.warn("Failed to check versions", e);
+      }
+    }
+
     window.addEventListener('DOMContentLoaded', () => {
       loadStats();
       loadAgentProfiles();
       loadSettings();
+      checkSystemVersions();
     });
   </script>
 </body>
