@@ -31,7 +31,7 @@ def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
 ssl.create_default_context = _certifi_ssl
 
 from livekit import agents, api, rtc
-from livekit.agents import Agent, AgentSession, RoomInputOptions, io as agents_io
+from livekit.agents import Agent, AgentSession, RoomInputOptions, io as agents_io, TurnHandlingOptions, InterruptionOptions
 try:
     from livekit.agents import RoomOptions as _RoomOptions
     _HAS_ROOM_OPTIONS = True
@@ -247,9 +247,21 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
         realtime_kwargs["session_resumption"]         = _session_resumption_cfg
         realtime_kwargs["context_window_compression"] = _ctx_compression_cfg
 
+    # Configure fast-response interruption options for self-hosted VAD barge-in
+    turn_handling = TurnHandlingOptions(
+        interruption=InterruptionOptions(
+            enabled=True,
+            mode="vad",                 # Use VAD for fast interruption on self-hosted
+            min_duration=0.25,          # Lower min_duration for faster response (0.25s vs 0.5s default)
+            backchannel_boundary=None,  # Disable backchannel suppression to enable instant interruption at start/end of agent turns
+            resume_false_interruption=True,
+        )
+    )
+
     return AgentSession(
         llm=RealtimeClass(**realtime_kwargs),
-        tools=tools
+        tools=tools,
+        turn_handling=turn_handling
     )
 
 
@@ -631,8 +643,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # ── Bind underlying RealtimeSession events ──
     rt_sess = getattr(session._activity, "_rt_session", None)
     if rt_sess is not None:
+        _user_speech_start_time = 0.0
+
         @rt_sess.on("input_speech_started")
         def _on_rt_input_speech_started(event):
+            nonlocal _user_speech_start_time
+            _user_speech_start_time = time.time()
             logger.info("[VAD DETECT] Server VAD: User started speaking")
 
         @rt_sess.on("input_speech_stopped")
@@ -643,11 +659,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
         @rt_sess.on("generation_created")
         def _on_rt_generation_created(event):
-            nonlocal _user_speech_stop_time
+            nonlocal _user_speech_stop_time, _user_speech_start_time
             now = time.time()
-            if _user_speech_stop_time > 0.0:
+            # If the user is currently speaking or just finished, measure from start of speech
+            if _user_speech_start_time > 0.0 and (now - _user_speech_start_time) < 5.0:
+                reply_latency = now - _user_speech_start_time
+                logger.info(f"[AUDIO GEN] Agent response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD start to response): {reply_latency * 1000:.0f}ms")
+            elif _user_speech_stop_time > 0.0:
                 reply_latency = now - _user_speech_stop_time
-                logger.info(f"[AUDIO GEN] Agent response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD to response): {reply_latency * 1000:.0f}ms")
+                logger.info(f"[AUDIO GEN] Agent response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD stop to response): {reply_latency * 1000:.0f}ms")
             else:
                 logger.info(f"[AUDIO GEN] Agent response generation started (id={event.response_id}) at {now - call_start_time:.2f}s")
 
@@ -667,18 +687,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         # Check if the model has mutable chat context (Gemini 3.1 Live has mutable_chat_context=False)
         is_mutable = getattr(session.llm, "capabilities", None) is None or getattr(session.llm.capabilities, "mutable_chat_context", True)
         if not is_mutable:
-            # For Gemini 3.1 Live API under livekit-plugins-google>=1.5.17, we must manually
-            # register a future in rt_sess._pending_generation_fut before sending LiveClientContent,
-            # mirroring what generate_reply() does internally. Bypasses the mutable_chat_context check.
+            # For Gemini 3.1 Live API, we trigger the greeting by sending a raw LiveClientContent event.
+            # We do NOT set _pending_generation_fut, which allows it to be processed as a standard 
+            # user_initiated=False server turn. AgentActivity automatically captures the event,
+            # creates a SpeechHandle, and streams the audio to the output track without dropping it.
             rt_sess = getattr(session._activity, "_rt_session", None)
             if rt_sess is not None:
-                fut = asyncio.get_event_loop().create_future()
-                rt_sess._pending_generation_fut = fut
-                
                 turns = [_gt.Content(role="user", parts=[_gt.Part(text="[SYSTEM: CALL_CONNECTED]")])]
                 event = _gt.LiveClientContent(turns=turns, turn_complete=True)
                 rt_sess._send_client_event(event)
-                await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via manual _pending_generation_fut registration.")
+                await _log("info", "[LATENCY AUDIT] Gemini 3.1 greeting triggered successfully via raw client event (user_initiated=False).")
             else:
                 await _log("warning", "Could not trigger Gemini 3.1 greeting: rt_session is None")
         else:
