@@ -520,6 +520,7 @@ async def get_stats(start_date: Optional[str] = None, end_date: Optional[str] = 
     return {
         "total_calls": total_calls, "booked": booked, "not_interested": not_interested,
         "avg_duration_seconds": round(avg_dur, 1), "booking_rate_percent": booking_rate,
+        "total_duration_seconds": sum(durations) if durations else 0,
         "outcomes": outcomes, "timeline": timeline, "duration_by_outcome": duration_by_outcome,
     }
 

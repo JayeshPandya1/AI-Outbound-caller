@@ -516,25 +516,20 @@
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
         <h2 style="margin: 0;">Dashboard Overview</h2>
         <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-          <select id="date-filter-preset" onchange="handlePresetFilterChange()" style="padding: 8px 12px; background: var(--bg2); border: 1px solid rgba(197, 168, 128, 0.2); border-radius: 6px; color: var(--text1); cursor: pointer; outline: none;">
-            <option value="today" selected>Today</option>
-            <option value="yesterday">Yesterday</option>
-            <option value="last-week">Last Week</option>
-            <option value="last-month">Last Month</option>
-            <option value="custom">Custom Range</option>
-            <option value="all">All Time</option>
+          <select id="date-filter-preset" onchange="handlePresetFilterChange()" style="padding: 8px 12px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; outline: none; width: auto; font-family: var(--sans); font-size: 14px;">
+            <option value="today" selected style="background: #121417; color: #FFFFFF;">Today</option>
+            <option value="yesterday" style="background: #121417; color: #FFFFFF;">Yesterday</option>
+            <option value="last-week" style="background: #121417; color: #FFFFFF;">Last Week</option>
+            <option value="last-month" style="background: #121417; color: #FFFFFF;">Last Month</option>
+            <option value="custom" style="background: #121417; color: #FFFFFF;">Custom Range</option>
+            <option value="all" style="background: #121417; color: #FFFFFF;">All Time</option>
           </select>
           <div id="custom-date-range-container" style="display: none; align-items: center; gap: 5px;">
-            <input type="date" id="filter-start-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--bg2); border: 1px solid rgba(197, 168, 128, 0.2); border-radius: 6px; color: var(--text1);" />
+            <input type="date" id="filter-start-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
             <span class="text2">to</span>
-            <input type="date" id="filter-end-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--bg2); border: 1px solid rgba(197, 168, 128, 0.2); border-radius: 6px; color: var(--text1);" />
+            <input type="date" id="filter-end-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
           </div>
         </div>
-      </div>
-
-      <div class="card">
-        <h3>Active Configuration</h3>
-        <div id="live-config-chips"></div>
       </div>
 
       <div class="grid-4" style="margin-bottom: 20px;">
@@ -552,19 +547,24 @@
         </div>
         <div class="stat-box">
           <div class="stat-num" id="s-dur">0s</div>
-          <div class="stat-label">Avg Duration</div>
+          <div class="stat-label">Total Duration</div>
         </div>
       </div>
 
-      <div class="grid-2">
+      <div class="grid-2" style="margin-bottom: 20px;">
         <div class="card">
-          <h3>Call Timeline (14 Days)</h3>
+          <h3>Call Timeline</h3>
           <div class="chart-container"><canvas id="chart-timeline"></canvas></div>
         </div>
         <div class="card">
           <h3>Outcomes Breakdown</h3>
           <div class="chart-container"><canvas id="chart-outcomes"></canvas></div>
         </div>
+      </div>
+
+      <div class="card">
+        <h3>Active Configuration</h3>
+        <div id="live-config-chips"></div>
       </div>
     </div>
 
@@ -1139,6 +1139,14 @@
       }
     }
 
+    function formatDuration(sec) {
+      if (!sec) return '0s';
+      if (sec < 60) return sec + 's';
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    }
+
     // -- Stats
     let _cTimeline, _cOutcomes;
     async function loadStats() {
@@ -1151,7 +1159,7 @@
         $('s-calls').textContent = d.total_calls;
         $('s-booked').textContent = d.booked;
         $('s-rate').textContent = d.booking_rate_percent + '%';
-        $('s-dur').textContent = d.avg_duration_seconds + 's';
+        $('s-dur').textContent = formatDuration(d.total_duration_seconds);
         renderCharts(d);
         loadLiveConfig();
       } catch (e) { }
