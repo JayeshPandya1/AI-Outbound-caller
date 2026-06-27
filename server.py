@@ -467,8 +467,8 @@ async def api_version_check():
     import importlib.metadata
     
     CONFIRMED_VERSIONS = {
-        "livekit-agents": "1.5.17",
-        "livekit-plugins-google": "1.5.17"
+        "livekit-agents": "1.6.4",
+        "livekit-plugins-google": "1.6.4"
     }
     
     status = "ok"

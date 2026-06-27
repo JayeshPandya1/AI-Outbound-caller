@@ -87,8 +87,8 @@ def _check_package_versions():
     import importlib.metadata
     
     CONFIRMED_VERSIONS = {
-        "livekit-agents": "1.5.17",
-        "livekit-plugins-google": "1.5.17"
+        "livekit-agents": "1.6.4",
+        "livekit-plugins-google": "1.6.4"
     }
     
     for pkg, conf_ver in CONFIRMED_VERSIONS.items():
@@ -331,7 +331,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     _model_coro = get_setting("GEMINI_MODEL", "gemini-3.1-flash-live-preview") if not model_override else _noop()
     _voice_coro = get_setting("GEMINI_TTS_VOICE", "Aoede") if not voice_override else _noop()
     _tools_coro = get_enabled_tools() if not tools_override else _noop()
-    _gate_coro = get_setting("SIP_GATE_THRESHOLD", "150.0")
+    _gate_coro = get_setting("SIP_GATE_THRESHOLD", "350.0")
     _model_r, _voice_r, _tools_r, _gate_r = await asyncio.gather(
         _model_coro, _voice_coro, _tools_coro, _gate_coro
     )
@@ -342,7 +342,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     try:
         silence_threshold = float(threshold_val)
     except ValueError:
-        silence_threshold = 150.0
+        silence_threshold = 350.0
     if tools_override:
         try:
             enabled_tools = json.loads(tools_override)
@@ -437,9 +437,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     from livekit.agents import room_io as _room_io
     _room_options = _room_io.RoomOptions(
         close_on_disconnect=False,
-        audio_input=_room_io.AudioInputOptions(
-            noise_cancellation=noise_cancellation.BVCTelephony(),
-        ),
         participant_identity=_sip_identity,
     )
     _session_kwargs = dict(
