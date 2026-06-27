@@ -192,30 +192,11 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
 
     logger.info("SESSION MODE: Gemini Live realtime (%s, voice=%s)", gemini_model, gemini_voice)
     try:
-        # Get VAD parameters from env (configured via Coolify or .env)
-        vad_sens_str = os.getenv("GEMINI_VAD_SENSITIVITY", "LOW").upper()
-        if vad_sens_str == "HIGH":
-            sens_enum = _gt.EndSensitivity.END_SENSITIVITY_HIGH
-        elif vad_sens_str == "STANDARD":
-            sens_enum = _gt.EndSensitivity.END_SENSITIVITY_STANDARD
-        else:
-            sens_enum = _gt.EndSensitivity.END_SENSITIVITY_LOW
-
-        try:
-            silence_ms = int(os.getenv("GEMINI_VAD_SILENCE_MS", "1000"))
-        except ValueError:
-            silence_ms = 1000
-
-        try:
-            padding_ms = int(os.getenv("GEMINI_VAD_PADDING_MS", "300"))
-        except ValueError:
-            padding_ms = 300
-
         _realtime_input_cfg = _gt.RealtimeInputConfig(
             automatic_activity_detection=_gt.AutomaticActivityDetection(
-                end_of_speech_sensitivity=sens_enum,
-                silence_duration_ms=silence_ms,
-                prefix_padding_ms=padding_ms,
+                end_of_speech_sensitivity=_gt.EndSensitivity.END_SENSITIVITY_LOW,
+                silence_duration_ms=1000,
+                prefix_padding_ms=200,
             ),
         )
         _session_resumption_cfg = _gt.SessionResumptionConfig(transparent=True)
@@ -223,7 +204,7 @@ def _build_session(tools: list, system_prompt: str, gemini_model: str, gemini_vo
             trigger_tokens=10000,
             sliding_window=_gt.SlidingWindow(target_tokens=5000),
         )
-        logger.info(f"Silence-prevention config applied: sensitivity={vad_sens_str}, silence={silence_ms}ms, padding={padding_ms}ms (transparent resumption, context compression)")
+        logger.info("Silence-prevention config applied (VAD HIGH, transparent resumption, context compression)")
     except Exception as _cfg_err:
         logger.warning("Could not build silence-prevention config: %s", _cfg_err)
         _realtime_input_cfg = None
@@ -385,8 +366,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     await _log("info", f"[LATENCY AUDIT] Session object built in {time.time() - t_session_init:.2f}s")
 
     _user_speech_stop_time = 0.0
-    _user_speech_start_time = 0.0
-    _user_is_speaking = False
 
     @session.on("user_state_changed")
     def _on_user_state_changed(event):
@@ -597,27 +576,19 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     if rt_sess is not None:
         @rt_sess.on("input_speech_started")
         def _on_rt_input_speech_started(event):
-            nonlocal _user_is_speaking, _user_speech_start_time
-            _user_is_speaking = True
-            _user_speech_start_time = time.time()
             logger.info("[VAD DETECT] Server VAD: User started speaking")
 
         @rt_sess.on("input_speech_stopped")
         def _on_rt_input_speech_stopped(event):
-            nonlocal _user_speech_stop_time, _user_is_speaking
+            nonlocal _user_speech_stop_time
             _user_speech_stop_time = time.time()
-            _user_is_speaking = False
             logger.info(f"[VAD DETECT] Server VAD: User stopped speaking at {_user_speech_stop_time - call_start_time:.2f}s")
 
         @rt_sess.on("generation_created")
         def _on_rt_generation_created(event):
-            nonlocal _user_speech_stop_time, _user_speech_start_time, _user_is_speaking
+            nonlocal _user_speech_stop_time
             now = time.time()
-            if _user_is_speaking and _user_speech_start_time > 0.0:
-                # User is still speaking; this is an early response / tool call / interruption
-                early_latency = now - _user_speech_start_time
-                logger.info(f"[AUDIO GEN] Agent response generation started early (user still speaking) (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD start to response): {early_latency * 1000:.0f}ms")
-            elif _user_speech_stop_time > 0.0:
+            if _user_speech_stop_time > 0.0:
                 reply_latency = now - _user_speech_stop_time
                 logger.info(f"[AUDIO GEN] Agent response generation started (id={event.response_id}) at {now - call_start_time:.2f}s | Reply Latency (VAD to response): {reply_latency * 1000:.0f}ms")
             else:
@@ -639,11 +610,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         # Check if the model has mutable chat context (Gemini 3.1 Live has mutable_chat_context=False)
         is_mutable = getattr(session.llm, "capabilities", None) is None or getattr(session.llm.capabilities, "mutable_chat_context", True)
         if not is_mutable:
-            # For Gemini 3.1 Live API, we push the text event directly to the realtime WebSocket channel.
-            # IMPORTANT: Use LiveClientRealtimeInput (NOT LiveClientContent) — using LiveClientContent
-            # bypasses the plugin's _pending_generation_fut assignment, causing _handle_input_speech_started()
-            # to fire as an unintended interruption after the greeting, which permanently breaks the
-            # conversation loop for the rest of the call (agent goes silent after greeting).
+            # For Gemini 3.1 Live API, we push the text event directly to the realtime WebSocket channel
+            # The low-level RealtimeSession is stored in session._activity._rt_session
             rt_sess = getattr(session._activity, "_rt_session", None)
             if rt_sess is not None:
                 event = _gt.LiveClientRealtimeInput(text="[SYSTEM: CALL_CONNECTED]")

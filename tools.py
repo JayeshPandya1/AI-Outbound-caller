@@ -109,25 +109,6 @@ class AppointmentTools(llm.ToolContext):
                 await clear_contact_cache(self.phone_number)
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
-
-        # Forcefully hang up the SIP caller by removing them from the LiveKit room
-        participant_identity = f"sip_{self.phone_number}" if self.phone_number else None
-        if not participant_identity:
-            for p in self.ctx.room.remote_participants.values():
-                participant_identity = p.identity
-                break
-        if participant_identity:
-            try:
-                logger.info(f"Hanging up SIP caller: {participant_identity}")
-                await self.ctx.api.room.remove_participant(
-                    api.RemoveParticipantRequest(
-                        room=self.ctx.room.name,
-                        identity=participant_identity
-                    )
-                )
-            except Exception as exc:
-                logger.warning(f"Failed to remove/hangup SIP participant: {exc}")
-
         try:
             await self.ctx.room.disconnect()
         except Exception:
@@ -199,13 +180,8 @@ class AppointmentTools(llm.ToolContext):
         sid = os.getenv("TWILIO_ACCOUNT_SID", "")
         token = os.getenv("TWILIO_AUTH_TOKEN", "")
         from_num = os.getenv("TWILIO_FROM_NUMBER", "")
-        if (not (sid and token and from_num) or 
-            "xxxx" in sid or 
-            "xxxx" in token or 
-            "12345" in from_num or 
-            "ACxxxxxxxx" in sid):
-            logger.info(f"[LATENCY AUDIT] send_sms_confirmation skipped (mock credentials) in {time.time() - t0:.4f}s")
-            return "SMS skipped: Twilio mock credentials detected."
+        if not (sid and token and from_num):
+            return "SMS skipped: Twilio not configured."
         try:
             from twilio.rest import Client
             from twilio.http.http_client import TwilioHttpClient

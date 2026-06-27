@@ -513,23 +513,11 @@
 
     <!-- STATS TAB -->
     <div id="tab-stats" class="tab-content active">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
-        <h2 style="margin: 0;">Dashboard Overview</h2>
-        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-          <select id="date-filter-preset" onchange="handlePresetFilterChange()" style="padding: 8px 12px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; outline: none; width: auto; font-family: var(--sans); font-size: 14px;">
-            <option value="today" selected style="background: #121417; color: #FFFFFF;">Today</option>
-            <option value="yesterday" style="background: #121417; color: #FFFFFF;">Yesterday</option>
-            <option value="last-week" style="background: #121417; color: #FFFFFF;">Last Week</option>
-            <option value="last-month" style="background: #121417; color: #FFFFFF;">Last Month</option>
-            <option value="custom" style="background: #121417; color: #FFFFFF;">Custom Range</option>
-            <option value="all" style="background: #121417; color: #FFFFFF;">All Time</option>
-          </select>
-          <div id="custom-date-range-container" style="display: none; align-items: center; gap: 5px;">
-            <input type="date" id="filter-start-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
-            <span class="text2">to</span>
-            <input type="date" id="filter-end-date" onchange="handleCustomDateChange()" style="padding: 6px 10px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
-          </div>
-        </div>
+      <h2>Dashboard Overview</h2>
+
+      <div class="card">
+        <h3>Active Configuration</h3>
+        <div id="live-config-chips"></div>
       </div>
 
       <div class="grid-4" style="margin-bottom: 20px;">
@@ -547,24 +535,19 @@
         </div>
         <div class="stat-box">
           <div class="stat-num" id="s-dur">0s</div>
-          <div class="stat-label">Total Duration</div>
+          <div class="stat-label">Avg Duration</div>
         </div>
       </div>
 
-      <div class="grid-2" style="margin-bottom: 20px;">
+      <div class="grid-2">
         <div class="card">
-          <h3>Call Timeline</h3>
+          <h3>Call Timeline (14 Days)</h3>
           <div class="chart-container"><canvas id="chart-timeline"></canvas></div>
         </div>
         <div class="card">
           <h3>Outcomes Breakdown</h3>
           <div class="chart-container"><canvas id="chart-outcomes"></canvas></div>
         </div>
-      </div>
-
-      <div class="card">
-        <h3>Active Configuration</h3>
-        <div id="live-config-chips"></div>
       </div>
     </div>
 
@@ -1061,105 +1044,15 @@
 
     const formatDt = (iso) => iso ? new Date(iso).toLocaleString() : '';
 
-    // -- Stats Filter Logic
-    let _filterStartDate = '';
-    let _filterEndDate = '';
-
-    function updateFilterDates() {
-      const preset = $('date-filter-preset').value;
-      const customContainer = $('custom-date-range-container');
-      
-      if (preset === 'custom') {
-        customContainer.style.display = 'flex';
-        _filterStartDate = $('filter-start-date').value ? $('filter-start-date').value + 'T00:00:00Z' : '';
-        _filterEndDate = $('filter-end-date').value ? $('filter-end-date').value + 'T23:59:59Z' : '';
-      } else {
-        customContainer.style.display = 'none';
-        
-        const now = new Date();
-        const yyyy = now.getFullYear();
-        const mm = String(now.getMonth() + 1).padStart(2, '0');
-        const dd = String(now.getDate()).padStart(2, '0');
-        const todayStr = `${yyyy}-${mm}-${dd}`;
-
-        if (preset === 'today') {
-          _filterStartDate = todayStr + 'T00:00:00Z';
-          _filterEndDate = todayStr + 'T23:59:59Z';
-        } else if (preset === 'yesterday') {
-          const yesterday = new Date(now);
-          yesterday.setDate(now.getDate() - 1);
-          const y_yyyy = yesterday.getFullYear();
-          const y_mm = String(yesterday.getMonth() + 1).padStart(2, '0');
-          const y_dd = String(yesterday.getDate()).padStart(2, '0');
-          const yesterdayStr = `${y_yyyy}-${y_mm}-${y_dd}`;
-          
-          _filterStartDate = yesterdayStr + 'T00:00:00Z';
-          _filterEndDate = yesterdayStr + 'T23:59:59Z';
-        } else if (preset === 'last-week') {
-          const lastWeek = new Date(now);
-          lastWeek.setDate(now.getDate() - 7);
-          const lw_yyyy = lastWeek.getFullYear();
-          const lw_mm = String(lastWeek.getMonth() + 1).padStart(2, '0');
-          const lw_dd = String(lastWeek.getDate()).padStart(2, '0');
-          
-          _filterStartDate = `${lw_yyyy}-${lw_mm}-${lw_dd}T00:00:00Z`;
-          _filterEndDate = todayStr + 'T23:59:59Z';
-        } else if (preset === 'last-month') {
-          const lastMonth = new Date(now);
-          lastMonth.setDate(now.getDate() - 30);
-          const lm_yyyy = lastMonth.getFullYear();
-          const lm_mm = String(lastMonth.getMonth() + 1).padStart(2, '0');
-          const lm_dd = String(lastMonth.getDate()).padStart(2, '0');
-          
-          _filterStartDate = `${lm_yyyy}-${lm_mm}-${lm_dd}T00:00:00Z`;
-          _filterEndDate = todayStr + 'T23:59:59Z';
-        } else {
-          // 'all'
-          _filterStartDate = '';
-          _filterEndDate = '';
-        }
-      }
-    }
-
-    async function handlePresetFilterChange() {
-      updateFilterDates();
-      await loadStats();
-      if ($('tab-logs').classList.contains('active')) {
-        _logPage = 1;
-        await loadCalls();
-      }
-    }
-
-    async function handleCustomDateChange() {
-      updateFilterDates();
-      await loadStats();
-      if ($('tab-logs').classList.contains('active')) {
-        _logPage = 1;
-        await loadCalls();
-      }
-    }
-
-    function formatDuration(sec) {
-      if (!sec) return '0s';
-      if (sec < 60) return sec + 's';
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      return s > 0 ? `${m}m ${s}s` : `${m}m`;
-    }
-
     // -- Stats
     let _cTimeline, _cOutcomes;
     async function loadStats() {
       try {
-        let url = '/api/stats';
-        if (_filterStartDate || _filterEndDate) {
-          url += `?start_date=${encodeURIComponent(_filterStartDate)}&end_date=${encodeURIComponent(_filterEndDate)}`;
-        }
-        const d = await api(url);
+        const d = await api('/api/stats');
         $('s-calls').textContent = d.total_calls;
         $('s-booked').textContent = d.booked;
         $('s-rate').textContent = d.booking_rate_percent + '%';
-        $('s-dur').textContent = formatDuration(d.total_duration_seconds);
+        $('s-dur').textContent = d.avg_duration_seconds + 's';
         renderCharts(d);
         loadLiveConfig();
       } catch (e) { }
@@ -1752,10 +1645,7 @@
 
     async function loadCalls() {
       try {
-        let url = `/api/calls?page=${_logPage}&limit=20`;
-        if (_filterStartDate) url += `&start_date=${encodeURIComponent(_filterStartDate)}`;
-        if (_filterEndDate) url += `&end_date=${encodeURIComponent(_filterEndDate)}`;
-        const res = await api(url);
+        const res = await api(`/api/calls?page=${_logPage}&limit=20`);
         const tb = $('tbl-calls').querySelector('tbody');
         tb.innerHTML = '';
         res.forEach(c => {
@@ -1875,7 +1765,6 @@
     setInterval(() => { if ($('tab-syslogs').classList.contains('active')) loadSyslogs(); }, 10000);
 
     window.addEventListener('DOMContentLoaded', () => {
-      updateFilterDates();
       loadStats();
       loadAgentProfiles();
       loadSettings();

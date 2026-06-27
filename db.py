@@ -383,15 +383,10 @@ async def update_call_outcome(call_id: str, outcome: str, reason: str, duration_
     return len(result.data or []) > 0
 
 
-async def get_all_calls(page: int = 1, limit: int = 20, start_date: Optional[str] = None, end_date: Optional[str] = None) -> list:
+async def get_all_calls(page: int = 1, limit: int = 20) -> list:
     db = await _adb()
     offset = (page - 1) * limit
-    query = db.table("call_logs").select("*").order("timestamp", desc=True)
-    if start_date:
-        query = query.gte("timestamp", start_date)
-    if end_date:
-        query = query.lte("timestamp", end_date)
-    result = await query.range(offset, offset + limit - 1).execute()
+    result = await db.table("call_logs").select("*").order("timestamp", desc=True).range(offset, offset + limit - 1).execute()
     return result.data or []
 
 
@@ -444,14 +439,9 @@ async def get_contacts() -> list:
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
-async def get_stats(start_date: Optional[str] = None, end_date: Optional[str] = None) -> dict:
+async def get_stats() -> dict:
     db = await _adb()
-    query = db.table("call_logs").select("outcome, duration_seconds, timestamp")
-    if start_date:
-        query = query.gte("timestamp", start_date)
-    if end_date:
-        query = query.lte("timestamp", end_date)
-    rows = (await query.execute()).data or []
+    rows = (await db.table("call_logs").select("outcome, duration_seconds, timestamp").execute()).data or []
     total_calls    = len(rows)
     booked         = sum(1 for r in rows if r.get("outcome") == "booked")
     not_interested = sum(1 for r in rows if r.get("outcome") == "not_interested")
@@ -463,50 +453,14 @@ async def get_stats(start_date: Optional[str] = None, end_date: Optional[str] = 
     for r in rows:
         o = r.get("outcome") or "unknown"
         outcomes[o] = outcomes.get(o, 0) + 1
-    # Timeline: calls per day
+    # Timeline: calls per day last 14 days
     daily: dict = {}
     for r in rows:
         ts = (r.get("timestamp") or "")[:10]
         if ts:
             daily[ts] = daily.get(ts, 0) + 1
-
-    # Calculate days in the range dynamically
-    from datetime import datetime, timezone, timedelta
-    start_d = None
-    end_d = None
-    if start_date:
-        try:
-            start_d = datetime.fromisoformat(start_date.split("T")[0]).date()
-        except Exception:
-            pass
-    if end_date:
-        try:
-            end_d = datetime.fromisoformat(end_date.split("T")[0]).date()
-        except Exception:
-            pass
-
-    if not start_d:
-        end_d = datetime.now(timezone.utc).date()
-        start_d = end_d - timedelta(days=13)
-    elif not end_d:
-        end_d = datetime.now(timezone.utc).date()
-
-    delta = (end_d - start_d).days
-    if delta > 90:
-        delta = 90
-        start_d = end_d - timedelta(days=90)
-    elif delta < 0:
-        delta = 0
-        start_d = end_d
-
-    timeline = [
-        {
-            "date": (start_d + timedelta(days=i)).isoformat(),
-            "count": daily.get((start_d + timedelta(days=i)).isoformat(), 0)
-        }
-        for i in range(delta + 1)
-    ]
-
+    today = datetime.now(timezone.utc).date()
+    timeline = [{"date": (today - timedelta(days=i)).isoformat(), "count": daily.get((today - timedelta(days=i)).isoformat(), 0)} for i in range(13, -1, -1)]
     # Avg duration by outcome
     dur_sum: dict = {}
     dur_cnt: dict = {}
@@ -520,7 +474,6 @@ async def get_stats(start_date: Optional[str] = None, end_date: Optional[str] = 
     return {
         "total_calls": total_calls, "booked": booked, "not_interested": not_interested,
         "avg_duration_seconds": round(avg_dur, 1), "booking_rate_percent": booking_rate,
-        "total_duration_seconds": sum(durations) if durations else 0,
         "outcomes": outcomes, "timeline": timeline, "duration_by_outcome": duration_by_outcome,
     }
 
