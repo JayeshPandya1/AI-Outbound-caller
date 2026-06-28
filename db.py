@@ -439,28 +439,102 @@ async def get_contacts() -> list:
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
-async def get_stats() -> dict:
+async def get_stats(
+    filter_type: Optional[str] = "last_week",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+) -> dict:
+    from datetime import time
     db = await _adb()
-    rows = (await db.table("call_logs").select("outcome, duration_seconds, timestamp").execute()).data or []
+    
+    query = db.table("call_logs").select("outcome, duration_seconds, timestamp")
+    
+    now = datetime.now(timezone.utc)
+    
+    if filter_type == "today":
+        start_dt = datetime.combine(now.date(), time.min).replace(tzinfo=timezone.utc)
+        query = query.gte("timestamp", start_dt.isoformat())
+    elif filter_type == "yesterday":
+        today_start = datetime.combine(now.date(), time.min).replace(tzinfo=timezone.utc)
+        yesterday_start = today_start - timedelta(days=1)
+        query = query.gte("timestamp", yesterday_start.isoformat()).lt("timestamp", today_start.isoformat())
+    elif filter_type == "last_week":
+        start_dt = now - timedelta(days=7)
+        query = query.gte("timestamp", start_dt.isoformat())
+    elif filter_type == "last_month":
+        start_dt = now - timedelta(days=30)
+        query = query.gte("timestamp", start_dt.isoformat())
+    elif filter_type == "custom" and start_date:
+        try:
+            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            start_dt = datetime.combine(s_date, time.min).replace(tzinfo=timezone.utc)
+            query = query.gte("timestamp", start_dt.isoformat())
+            if end_date:
+                e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+                end_dt = datetime.combine(e_date, time.max).replace(tzinfo=timezone.utc)
+                query = query.lte("timestamp", end_dt.isoformat())
+        except ValueError:
+            pass
+
+    rows = (await query.execute()).data or []
+    
     total_calls    = len(rows)
     booked         = sum(1 for r in rows if r.get("outcome") == "booked")
     not_interested = sum(1 for r in rows if r.get("outcome") == "not_interested")
     durations      = [r["duration_seconds"] for r in rows if r.get("duration_seconds")]
+    
+    total_dur      = sum(durations) if durations else 0
     avg_dur        = sum(durations) / len(durations) if durations else 0
     booking_rate   = round((booked / total_calls * 100) if total_calls else 0, 1)
+    
     # Outcomes breakdown
     outcomes: dict = {}
     for r in rows:
         o = r.get("outcome") or "unknown"
         outcomes[o] = outcomes.get(o, 0) + 1
-    # Timeline: calls per day last 14 days
-    daily: dict = {}
-    for r in rows:
-        ts = (r.get("timestamp") or "")[:10]
-        if ts:
-            daily[ts] = daily.get(ts, 0) + 1
-    today = datetime.now(timezone.utc).date()
-    timeline = [{"date": (today - timedelta(days=i)).isoformat(), "count": daily.get((today - timedelta(days=i)).isoformat(), 0)} for i in range(13, -1, -1)]
+        
+    # Dynamic timeline buckets (hourly for today/yesterday, daily for others)
+    if filter_type in ("today", "yesterday"):
+        hourly = {f"{h:02d}:00": 0 for h in range(24)}
+        for r in rows:
+            ts = r.get("timestamp")
+            if ts:
+                hr = ts[11:13]
+                if hr.isdigit():
+                    lbl = f"{int(hr):02d}:00"
+                    hourly[lbl] = hourly.get(lbl, 0) + 1
+        timeline = [{"date": k, "count": v} for k, v in sorted(hourly.items())]
+    else:
+        daily: dict = {}
+        for r in rows:
+            ts = (r.get("timestamp") or "")[:10]
+            if ts:
+                daily[ts] = daily.get(ts, 0) + 1
+        
+        if filter_type == "last_week":
+            num_days = 7
+            start_day = now.date() - timedelta(days=6)
+        elif filter_type == "last_month":
+            num_days = 30
+            start_day = now.date() - timedelta(days=29)
+        elif filter_type == "custom" and start_date and end_date:
+            try:
+                s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+                num_days = (e_date - s_date).days + 1
+                start_day = s_date
+            except Exception:
+                num_days = 14
+                start_day = now.date() - timedelta(days=13)
+        else:
+            num_days = 14
+            start_day = now.date() - timedelta(days=13)
+            
+        timeline = []
+        for i in range(num_days):
+            d = (start_day + timedelta(days=i)).isoformat()
+            timeline.append({"date": d, "count": daily.get(d, 0)})
+
     # Avg duration by outcome
     dur_sum: dict = {}
     dur_cnt: dict = {}
@@ -471,9 +545,11 @@ async def get_stats() -> dict:
             dur_sum[o] = dur_sum.get(o, 0.0) + sec
             dur_cnt[o] = dur_cnt.get(o, 0) + 1
     duration_by_outcome = {o: dur_sum[o] / dur_cnt[o] for o in dur_sum}
+    
     return {
         "total_calls": total_calls, "booked": booked, "not_interested": not_interested,
-        "avg_duration_seconds": round(avg_dur, 1), "booking_rate_percent": booking_rate,
+        "avg_duration_seconds": round(avg_dur, 1), "total_duration_seconds": total_dur,
+        "booking_rate_percent": booking_rate,
         "outcomes": outcomes, "timeline": timeline, "duration_by_outcome": duration_by_outcome,
     }
 

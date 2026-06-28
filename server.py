@@ -455,11 +455,13 @@ async def api_update_notes(call_id: str, req: NotesRequest):
     return {"status": "updated"}
 
 
-# ── Stats ─────────────────────────────────────────────────────────────────────
-
 @app.get("/api/stats")
-async def api_get_stats():
-    return await get_stats()
+async def api_get_stats(
+    filter: Optional[str] = "last_week",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    return await get_stats(filter_type=filter, start_date=start_date, end_date=end_date)
 
 
 @app.get("/api/version-check")

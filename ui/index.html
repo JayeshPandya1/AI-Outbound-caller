@@ -540,14 +540,25 @@
 
     <!-- STATS TAB -->
     <div id="tab-stats" class="tab-content active">
-      <h2>Dashboard Overview</h2>
-
-      <div class="card">
-        <h3>Active Configuration</h3>
-        <div id="live-config-chips"></div>
+      <div class="flex-between" style="margin-bottom: 25px; flex-wrap: wrap; gap: 15px;">
+        <h2 style="margin-bottom: 0;">Dashboard Overview</h2>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <select id="stats-filter" onchange="onStatsFilterChange()" style="width: 150px; margin-bottom: 0;">
+            <option value="last_week" selected>Last Week</option>
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="last_month">Last Month</option>
+            <option value="custom">Custom Date</option>
+          </select>
+          <div id="custom-date-inputs" style="display: none; gap: 8px; align-items: center;">
+            <input type="date" id="stats-start-date" onchange="onCustomDateChange()" style="width: 135px; margin-bottom: 0;" />
+            <span style="color: var(--text2)">to</span>
+            <input type="date" id="stats-end-date" onchange="onCustomDateChange()" style="width: 135px; margin-bottom: 0;" />
+          </div>
+        </div>
       </div>
 
-      <div class="grid-4" style="margin-bottom: 20px;">
+      <div class="grid-4" style="margin-bottom: 25px;">
         <div class="stat-box">
           <div class="stat-num" id="s-calls">0</div>
           <div class="stat-label">Total Calls</div>
@@ -562,19 +573,24 @@
         </div>
         <div class="stat-box">
           <div class="stat-num" id="s-dur">0s</div>
-          <div class="stat-label">Avg Duration</div>
+          <div class="stat-label">Total Duration</div>
         </div>
       </div>
 
-      <div class="grid-2">
-        <div class="card">
-          <h3>Call Timeline (14 Days)</h3>
+      <div class="grid-2" style="margin-bottom: 25px;">
+        <div class="card" style="margin-bottom: 0;">
+          <h3 id="timeline-title">Call Timeline</h3>
           <div class="chart-container"><canvas id="chart-timeline"></canvas></div>
         </div>
-        <div class="card">
+        <div class="card" style="margin-bottom: 0;">
           <h3>Outcomes Breakdown</h3>
           <div class="chart-container"><canvas id="chart-outcomes"></canvas></div>
         </div>
+      </div>
+
+      <div class="card">
+        <h3>Active Configuration</h3>
+        <div id="live-config-chips"></div>
       </div>
     </div>
 
@@ -1073,16 +1089,67 @@
 
     // -- Stats
     let _cTimeline, _cOutcomes;
+    
+    function formatDuration(sec) {
+      if (!sec) return '0s';
+      if (sec < 60) return `${sec}s`;
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      if (m < 60) return `${m}m ${s}s`;
+      const h = Math.floor(m / 60);
+      const rem_m = m % 60;
+      return `${h}h ${rem_m}m`;
+    }
+
     async function loadStats() {
       try {
-        const d = await api('/api/stats');
+        const filterVal = $('stats-filter').value;
+        const startDate = $('stats-start-date').value;
+        const endDate = $('stats-end-date').value;
+        
+        let url = `/api/stats?filter=${filterVal}`;
+        if (filterVal === 'custom') {
+          url += `&start_date=${startDate}&end_date=${endDate}`;
+        }
+        
+        const d = await api(url);
         $('s-calls').textContent = d.total_calls;
         $('s-booked').textContent = d.booked;
         $('s-rate').textContent = d.booking_rate_percent + '%';
-        $('s-dur').textContent = d.avg_duration_seconds + 's';
+        $('s-dur').textContent = formatDuration(d.total_duration_seconds);
+        
+        // Update timeline title text based on filter selection
+        const titleEl = $('timeline-title');
+        if (filterVal === 'today' || filterVal === 'yesterday') {
+          titleEl.textContent = `Call Timeline (Hourly)`;
+        } else if (filterVal === 'last_week') {
+          titleEl.textContent = `Call Timeline (Last 7 Days)`;
+        } else if (filterVal === 'last_month') {
+          titleEl.textContent = `Call Timeline (Last 30 Days)`;
+        } else if (filterVal === 'custom') {
+          titleEl.textContent = `Call Timeline (Custom Range)`;
+        } else {
+          titleEl.textContent = `Call Timeline`;
+        }
+        
         renderCharts(d);
         loadLiveConfig();
       } catch (e) { }
+    }
+
+    window.onStatsFilterChange = function() {
+      const val = $('stats-filter').value;
+      const customInputs = $('custom-date-inputs');
+      if (val === 'custom') {
+        customInputs.style.display = 'flex';
+      } else {
+        customInputs.style.display = 'none';
+      }
+      loadStats();
+    }
+
+    window.onCustomDateChange = function() {
+      loadStats();
     }
     async function loadLiveConfig() {
       const s = await api('/api/settings');
@@ -1814,6 +1881,12 @@
     }
 
     window.addEventListener('DOMContentLoaded', () => {
+      // Set default date range to [today - 7 days, today]
+      const todayStr = new Date().toISOString().split('T')[0];
+      const pastStr = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      $('stats-start-date').value = pastStr;
+      $('stats-end-date').value = todayStr;
+
       loadStats();
       loadAgentProfiles();
       loadSettings();
