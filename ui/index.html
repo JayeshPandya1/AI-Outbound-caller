@@ -16,6 +16,21 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
   <style>
+    /* Batch Name Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 10000; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    }
+    .modal-overlay.open { opacity: 1; pointer-events: all; }
+    .modal-box {
+      background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 32px; width: 420px; max-width: 90vw;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .modal-box h3 { margin-bottom: 20px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
     /* Performance-First Luxury Theme */
     *, *::before, *::after {
       box-sizing: border-box;
@@ -520,6 +535,7 @@
       <div class="nav-item active" onclick="switchTab('stats')">📊 Stats</div>
       <div class="nav-item" onclick="switchTab('call')">📞 Single Call</div>
       <div class="nav-item" onclick="switchTab('batch')">📋 Batch Call</div>
+      <div class="nav-item" onclick="switchTab('batch-log')">📦 Batch Log</div>
       <div class="nav-item" onclick="switchTab('campaigns')">🚀 Campaigns</div>
       <div class="nav-item" onclick="switchTab('agents')">🤖 Agents</div>
       <div class="nav-item" onclick="switchTab('prompt')">✏️ AI Prompt</div>
@@ -653,9 +669,9 @@
             </select>
           </div>
           <div class="flex-between" style="margin-top: 15px; gap: 10px;">
-            <button type="button" class="primary" id="bc-start" disabled onclick="startBatch()">▶ Start Batch</button>
-            <button type="button" class="danger" id="bc-stop" disabled onclick="stopBatch()">⏹ Stop Batch</button>
-            <button type="button" id="bc-export" disabled onclick="exportBatchCSV()">📥 Export Results</button>
+            <button type="button" class="primary" id="bc-start" disabled onclick="openBatchNameModal()">▶ Start Batch</button>
+            <button type="button" class="danger" id="bc-stop" disabled onclick="stopBatch()">⏹ Stop</button>
+            <button type="button" id="bc-export" disabled onclick="exportBatchCSV()">📥 Export</button>
           </div>
         </div>
 
@@ -712,6 +728,52 @@
             </thead>
             <tbody id="bc-tbody">
               <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- BATCH NAME MODAL -->
+    <div id="batch-name-modal" class="modal-overlay" onclick="if(event.target===this)closeBatchNameModal()">
+      <div class="modal-box">
+        <h3>Name This Batch</h3>
+        <p style="color:var(--text2);margin-bottom:20px;font-size:13px;">Give this batch a name so you can identify it later in Batch Log.</p>
+        <label>Batch Name</label>
+        <input type="text" id="batch-name-input" placeholder="e.g. June 28 Morning Run — Qualified Leads"
+               onkeydown="if(event.key==='Enter')startBatch()" style="margin-bottom:0;" />
+        <div class="modal-actions">
+          <button onclick="closeBatchNameModal()">Cancel</button>
+          <button class="primary" onclick="startBatch()">▶ Start Batch</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- BATCH LOG TAB -->
+    <div id="tab-batch-log" class="tab-content">
+      <div class="flex-between" style="margin-bottom:25px;">
+        <h2>📦 Batch Log</h2>
+        <button onclick="loadBatchHistory()">↺ Refresh</button>
+      </div>
+      <div class="card">
+        <p style="color:var(--text2);margin-bottom:20px;font-size:13px;">
+          Every batch run is saved here permanently. Export results from any batch at any time — even batches run weeks or months ago.
+        </p>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Batch Name</th>
+                <th>Started</th>
+                <th style="text-align:center;">Total</th>
+                <th style="text-align:center;">Progress</th>
+                <th>Status</th>
+                <th>Finished</th>
+                <th>Export</th>
+              </tr>
+            </thead>
+            <tbody id="batch-log-tbody">
+              <tr><td colspan="7" style="text-align:center;color:var(--text2);padding:30px;">Loading...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1083,6 +1145,8 @@
       if (name === 'crm') loadCRM();
       if (name === 'appointments') loadAppointments();
       if (name === 'syslogs') loadSyslogs();
+      if (name === 'batch') reconnectActiveBatch();
+      if (name === 'batch-log') loadBatchHistory();
     }
 
     const formatDt = (iso) => iso ? new Date(iso).toLocaleString() : '';
@@ -1202,9 +1266,11 @@
       }
     }
 
-    // -- Batch Call
-    let _batchData = [];
-    let _batchCancelled = false;
+    // -- Batch Call (Server-Side Orchestration)
+    let _batchData = [];          // Contacts loaded from CSV (local preview only)
+    let _activeBatchId = null;    // ID of running batch on server
+    let _batchPollTimer = null;   // setInterval handle for progress polling
+    let _batchIsRunning = false;  // UI state guard
 
     function parseBatchCSV() {
       const f = $('bc-file').files[0];
@@ -1392,203 +1458,184 @@
     }
 
     function stopBatch() {
-      _batchCancelled = true;
-      $('bc-stop').disabled = true;
-      toast('Stopping batch... waiting for current call to close.');
+      if (!_activeBatchId) return;
+      apiPost(`/api/batch/${_activeBatchId}/stop`, {}).then(() => {
+        toast('Stop signal sent. Waiting for current call to finish...');
+        $('bc-stop').disabled = true;
+      }).catch(e => toast(e.message || 'Error stopping batch', true));
+    }
+
+
+    /* ── Batch Name Modal ─────────────────────────────────────────────────── */
+    function openBatchNameModal() {
+      if (!_batchData.length) return;
+      $('batch-name-modal').classList.add('open');
+      $('batch-name-input').value = '';
+      $('batch-name-input').focus();
+    }
+    function closeBatchNameModal() {
+      $('batch-name-modal').classList.remove('open');
     }
 
     async function startBatch() {
-      if (!_batchData.length) return;
-      
-      _batchCancelled = false;
+      const batchName = $('batch-name-input').value.trim();
+      if (!batchName) { toast('Please enter a batch name.', true); return; }
+      closeBatchNameModal();
+
+      const delay = parseInt($('bc-delay').value || 3);
+      const pid = $('bc-profile').value || null;
+
+      // Reset statuses to pending for UI preview
+      _batchData.forEach(c => { c.status = 'pending'; c.error_message = ''; });
+      updateBatchUI();
+
       $('bc-start').disabled = true;
       $('bc-stop').disabled = false;
       $('bc-export').disabled = true;
       $('bc-file').disabled = true;
-      
-      // Reset statuses to pending
-      _batchData.forEach(c => {
-        c.status = 'pending';
-        c.error_message = '';
-      });
-      updateBatchUI();
-      
-      const delay = parseInt($('bc-delay').value || 3) * 1000;
-      const pid = $('bc-profile').value || null;
-      
-      for (let i = 0; i < _batchData.length; i++) {
-        if (_batchCancelled) {
-          toast('Batch stopped.');
-          break;
-        }
-        
-        const contact = _batchData[i];
-        contact.status = 'active';
-        updateBatchUI();
-        
-        // Auto-scroll the active row into view in the scrollable table
-        const row = $('bc-tbody').children[i];
-        if (row) {
-          row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-        
-        try {
-          const res = await apiPost('/api/call', {
-            phone: contact.phone,
-            lead_name: contact.lead_name,
-            business_name: contact.business_name,
-            service_type: contact.service_type,
-            agent_profile_id: pid
-          });
-          
-          if (res && res.room) {
-            const roomName = res.room;
-            
-            // 1. Wait for room to start (appear in active-rooms list, up to 10s)
-            let roomStarted = false;
-            for (let checkStart = 0; checkStart < 10; checkStart++) {
-              if (_batchCancelled) break;
-              try {
-                const activeRoomsData = await api('/api/active-rooms');
-                const rooms = activeRoomsData.rooms || [];
-                if (rooms.includes(roomName)) {
-                  roomStarted = true;
-                  break;
-                }
-              } catch (e) {
-                console.warn("Failed to check active rooms during startup", e);
-              }
-              await new Promise(r => setTimeout(r, 1000));
-            }
-            
-            if (roomStarted && !_batchCancelled) {
-              // 2. Room started. Wait for it to end/disappear.
-              let callActive = true;
-              let checks = 0;
-              const maxChecks = 150; // 5 minutes max per call
-              
-              while (callActive && !_batchCancelled) {
-                try {
-                  const activeRoomsData = await api('/api/active-rooms');
-                  const rooms = activeRoomsData.rooms || [];
-                  
-                  if (!rooms.includes(roomName)) {
-                    callActive = false;
-                  } else {
-                    checks++;
-                    if (checks >= maxChecks) {
-                      callActive = false;
-                      contact.error_message = 'Call timed out';
-                    } else {
-                      await new Promise(r => setTimeout(r, 2000));
-                    }
-                  }
-                } catch (e) {
-                  console.warn("Failed to check active rooms during call progress", e);
-                  // On temporary network errors, wait and try again
-                  await new Promise(r => setTimeout(r, 2000));
-                }
-              }
-              // Check the database for the call outcome to get the exact result label!
-              let finalStatus = 'completed';
-              let callDetails = 'Call finished';
-              
-              if (!contact.error_message) {
-                try {
-                  const callLogsRes = await api(`/api/crm/calls?phone=${encodeURIComponent(contact.phone)}`);
-                  if (callLogsRes && callLogsRes.data && callLogsRes.data.length > 0) {
-                    const latestCall = callLogsRes.data[0];
-                    const logTime = new Date(latestCall.timestamp);
-                    const now = new Date();
-                    const diffMs = now - logTime;
-                    
-                    if (diffMs < 180000) {
-                      const dbOutcome = latestCall.outcome;
-                      
-                      if (dbOutcome === 'no_answer') {
-                        finalStatus = 'not_responded';
-                        callDetails = 'No Answer / SIP dial failed';
-                      } else if (dbOutcome === 'voicemail') {
-                        finalStatus = 'not_responded';
-                        callDetails = 'Left Voicemail';
-                      } else if (dbOutcome === 'wrong_number') {
-                        finalStatus = 'not_responded';
-                        callDetails = 'Wrong Number';
-                      } else if (dbOutcome === 'not_interested') {
-                        finalStatus = 'completed';
-                        callDetails = 'Not Interested';
-                      } else if (dbOutcome === 'booked') {
-                        finalStatus = 'completed';
-                        callDetails = 'Booked Appointment';
-                      } else if (dbOutcome === 'dropped') {
-                        finalStatus = 'completed';
-                        callDetails = 'Call Dropped / Hung up';
-                      } else if (dbOutcome === 'callback_requested') {
-                        finalStatus = 'completed';
-                        callDetails = 'Callback Requested';
-                      } else {
-                        callDetails = dbOutcome || 'Call completed';
-                      }
-                    }
-                  }
-                } catch (err) {
-                  console.warn("Failed to fetch final call log outcome:", err);
-                }
-              } else {
-                finalStatus = 'failed';
-                callDetails = contact.error_message;
-              }
-              
-              contact.status = finalStatus;
-              contact.error_message = callDetails;
-            } else {
-              if (_batchCancelled) {
-                contact.status = 'pending';
-              } else {
-                let finalStatus = 'failed';
-                let callDetails = 'Call failed to initialize';
-                try {
-                  const callLogsRes = await api(`/api/crm/calls?phone=${encodeURIComponent(contact.phone)}`);
-                  if (callLogsRes && callLogsRes.data && callLogsRes.data.length > 0) {
-                    const latestCall = callLogsRes.data[0];
-                    const logTime = new Date(latestCall.timestamp);
-                    const now = new Date();
-                    const diffMs = now - logTime;
-                    if (diffMs < 180000 && latestCall.outcome === 'no_answer') {
-                      finalStatus = 'not_responded';
-                      callDetails = 'No Answer / SIP dial failed';
-                    }
-                  }
-                } catch (e) {}
-                contact.status = finalStatus;
-                contact.error_message = callDetails;
-              }
-            }
-          } else {
-            contact.status = 'failed';
-            contact.error_message = 'Invalid server response';
-          }
-        } catch (err) {
-          contact.status = 'failed';
-          contact.error_message = err.message || 'Call failed';
-        }
-        
-        updateBatchUI();
-        
-        if (i < _batchData.length - 1 && !_batchCancelled) {
-          await new Promise(r => setTimeout(r, delay));
-        }
+
+      try {
+        const res = await apiPost('/api/batch', {
+          name: batchName,
+          contacts: _batchData.map(c => ({
+            phone: c.phone, lead_name: c.lead_name,
+            business_name: c.business_name, service_type: c.service_type
+          })),
+          call_delay_seconds: delay,
+          agent_profile_id: pid,
+        });
+        _activeBatchId = res.batch_id;
+        _batchIsRunning = true;
+        toast(`Batch "${batchName}" started on server (${_batchData.length} contacts)`);
+        startBatchPolling(_activeBatchId);
+      } catch (err) {
+        toast(err.message || 'Failed to start batch', true);
+        $('bc-start').disabled = false;
+        $('bc-stop').disabled = true;
+        $('bc-export').disabled = false;
+        $('bc-file').disabled = false;
       }
-      
-      $('bc-start').disabled = false;
-      $('bc-stop').disabled = true;
-      $('bc-export').disabled = false;
-      $('bc-file').disabled = false;
-      toast('Batch processing complete.');
     }
 
+    /* ── Live Progress Polling ───────────────────────────────────────────────── */
+    function startBatchPolling(batchId) {
+      if (_batchPollTimer) clearInterval(_batchPollTimer);
+      _batchPollTimer = setInterval(() => pollBatchStatus(batchId), 2000);
+    }
 
-    // -- Campaigns
+    async function pollBatchStatus(batchId) {
+      try {
+        const batch = await api(`/api/batch/${batchId}`);
+        // Sync server data into local _batchData for rendering
+        const contacts = JSON.parse(batch.contacts_json || '[]');
+        _batchData = contacts.map(c => ({
+          phone: c.phone, lead_name: c.lead_name,
+          business_name: c.business_name, service_type: c.service_type,
+          status: c.status, error_message: c.outcome || c.error_message || '',
+        }));
+        updateBatchUI();
+
+        if (batch.status !== 'running') {
+          // Batch is done (completed / stopped / failed)
+          clearInterval(_batchPollTimer);
+          _batchPollTimer = null;
+          _batchIsRunning = false;
+          _activeBatchId = null;
+          $('bc-start').disabled = _batchData.length === 0;
+          $('bc-stop').disabled = true;
+          $('bc-export').disabled = false;
+          $('bc-file').disabled = false;
+          const label = batch.status === 'completed' ? 'Batch complete ✅' :
+                        batch.status === 'stopped'   ? 'Batch stopped ⛔' : 'Batch failed ❌';
+          toast(label);
+          // Refresh batch log if it's open
+          if ($('tab-batch-log').classList.contains('active')) loadBatchHistory();
+        }
+      } catch (e) {
+        console.warn('Batch poll error:', e);
+      }
+    }
+
+    async function reconnectActiveBatch() {
+      // Called when switching to Batch tab — re-attaches to any running server batch
+      try {
+        const res = await api('/api/batch/active');
+        if (res.active && res.batch) {
+          const batch = res.batch;
+          _activeBatchId = batch.id;
+          _batchIsRunning = true;
+          $('bc-stop').disabled = false;
+          $('bc-start').disabled = true;
+          $('bc-file').disabled = true;
+          const contacts = JSON.parse(batch.contacts_json || '[]');
+          _batchData = contacts.map(c => ({
+            phone: c.phone, lead_name: c.lead_name,
+            business_name: c.business_name, service_type: c.service_type,
+            status: c.status, error_message: c.outcome || c.error_message || '',
+          }));
+          $('bc-summary-card').classList.remove('hidden');
+          $('bc-preview-container').classList.remove('hidden');
+          updateBatchUI();
+          startBatchPolling(_activeBatchId);
+          toast(`Reconnected to running batch: "${batch.name}"`);
+        }
+      } catch (e) { /* no active batch */ }
+    }
+
+    /* ── Batch Log Tab ───────────────────────────────────────────────────────── */
+    async function loadBatchHistory() {
+      try {
+        const list = await api('/api/batch/history');
+        const tb = $('batch-log-tbody');
+        tb.innerHTML = '';
+        if (!list.length) {
+          tb.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text2);padding:30px;">No batches run yet. Start your first batch from the Batch Call tab.</td></tr>`;
+          return;
+        }
+        list.forEach(b => {
+          const statusBadge = {
+            running:   '<span class="badge active-call">🔄 Running</span>',
+            completed: '<span class="badge ok">✅ Completed</span>',
+            stopped:   '<span class="badge warn">⛔ Stopped</span>',
+            failed:    '<span class="badge err">❌ Failed</span>',
+          }[b.status] || `<span class="badge">${b.status}</span>`;
+          const progress = b.status === 'running'
+            ? `${b.completed_count} / ${b.total_contacts}`
+            : `${b.completed_count} / ${b.total_contacts}`;
+          tb.innerHTML += `<tr>
+            <td><strong>${escapeHtml(b.name)}</strong></td>
+            <td><small>${formatDt(b.created_at)}</small></td>
+            <td style="text-align:center;">${b.total_contacts}</td>
+            <td style="text-align:center;">${progress}</td>
+            <td>${statusBadge}</td>
+            <td><small style="color:var(--text2);">${b.completed_at ? formatDt(b.completed_at) : '—'}</small></td>
+            <td><button onclick="exportBatchLog('${b.id}', '${escapeHtml(b.name)}')">📥 Export CSV</button></td>
+          </tr>`;
+        });
+      } catch (e) { toast('Failed to load batch history', true); }
+    }
+
+    async function exportBatchLog(batchId, batchName) {
+      try {
+        const batch = await api(`/api/batch/${batchId}`);
+        const contacts = JSON.parse(batch.contacts_json || '[]');
+        const headers = ['Batch_Name', 'Batch_Date', 'Phone', 'Lead_Name', 'Business_Name', 'Service_Type', 'Status', 'Outcome', 'Error'];
+        const batchDate = new Date(batch.created_at).toLocaleString();
+        const rows = contacts.map(c => [
+          batchName, batchDate,
+          c.phone, c.lead_name, c.business_name, c.service_type,
+          c.status, c.outcome || '', c.error_message || ''
+        ]);
+        const csv = 'data:text/csv;charset=utf-8,'
+          + [headers.join(','), ...rows.map(r => r.map(v => `"${String(v || '').replace(/"/g, '""')}"`).join(','))].join('\n');
+        const a = document.createElement('a');
+        a.href = encodeURI(csv);
+        const slug = batchName.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+        a.download = `batch_${slug}_${new Date(batch.created_at).toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        toast('Export downloaded');
+      } catch (e) { toast('Export failed: ' + (e.message || ''), true); }
+    }
     async function loadCampaigns() {
       try {
         const d = await api('/api/campaigns');
@@ -1891,6 +1938,7 @@
       loadAgentProfiles();
       loadSettings();
       checkSystemVersions();
+      reconnectActiveBatch();  // Auto-reconnect to any running server batch
     });
   </script>
 </body>

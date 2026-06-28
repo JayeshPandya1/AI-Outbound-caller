@@ -34,7 +34,10 @@ from db import (
     delete_campaign,
     ensure_default_user, get_user_by_login_id, verify_password, create_user_session,
     get_user_session, delete_user_session, get_all_active_sessions_for_user,
-    delete_user_session_by_id, update_user
+    delete_user_session_by_id, update_user,
+    # Batch runs
+    create_batch_run, get_batch_run, get_active_batch_run, get_all_batch_runs,
+    update_batch_contact_status, update_batch_run_status,
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
 
@@ -152,6 +155,13 @@ class CampaignRequest(BaseModel):
     schedule_time: str = "09:00"
     call_delay_seconds: int = 3
     system_prompt: Optional[str] = None
+    agent_profile_id: Optional[str] = None
+
+
+class BatchRequest(BaseModel):
+    name: str
+    contacts: list
+    call_delay_seconds: int = 3
     agent_profile_id: Optional[str] = None
 
 
@@ -1247,3 +1257,238 @@ async def api_update_campaign_status(campaign_id: str, req: StatusRequest):
         if campaign and campaign.get("schedule_type") in ("daily", "weekdays"):
             _schedule_campaign(campaign_id, campaign["schedule_type"], campaign.get("schedule_time", "09:00"))
     return {"status": req.status}
+
+
+# ── Server-Side Batch Orchestration ───────────────────────────────────────────
+
+# Tracks asyncio tasks for running batches (within this process lifecycle only)
+_active_batch_tasks: dict = {}
+
+
+async def _run_batch(batch_id: str) -> None:
+    """Server-side sequential batch runner. Modelled on _run_campaign().
+    Runs entirely on Coolify — survives browser tab close and device sleep."""
+    from datetime import datetime, timezone as _tz
+    batch = await get_batch_run(batch_id)
+    if not batch:
+        return
+
+    contacts = json.loads(batch.get("contacts_json") or "[]")
+    if not contacts:
+        await update_batch_run_status(batch_id, "completed")
+        return
+
+    delay = int(batch.get("call_delay_seconds") or 3)
+    agent_profile_id = batch.get("agent_profile_id")
+    profile = None
+    if agent_profile_id:
+        profile = await get_agent_profile(agent_profile_id)
+
+    url    = await eff("LIVEKIT_URL")
+    key    = await eff("LIVEKIT_API_KEY")
+    secret = await eff("LIVEKIT_API_SECRET")
+    if not (url and key and secret):
+        logger.error("Batch %s: LiveKit not configured", batch_id)
+        await update_batch_run_status(batch_id, "failed")
+        return
+
+    from livekit import api as lk_api_module
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    lk_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+
+    try:
+        lk = lk_api_module.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=lk_session)
+
+        for i, contact in enumerate(contacts):
+            # ── Cancellation check ──────────────────────────────────────────
+            current = await get_batch_run(batch_id)
+            if not current or current.get("status") == "stopped":
+                logger.info("Batch %s stopped at index %d", batch_id, i)
+                break
+
+            phone = contact.get("phone", "")
+            if not phone.startswith("+"):
+                await update_batch_contact_status(batch_id, i, "failed", None, "Invalid phone (must start with +)")
+                continue
+
+            room_name = f"batch-{batch_id[:8]}-{phone.replace('+', '')}-{random.randint(100, 999)}"
+
+            # Mark contact as active in DB
+            await update_batch_contact_status(batch_id, i, "active", None, None)
+
+            # Build metadata for agent
+            prompt = await get_setting("system_prompt", "") or None
+            metadata: dict = {
+                "phone_number": phone,
+                "lead_name": contact.get("lead_name", "there"),
+                "business_name": contact.get("business_name", "our company"),
+                "service_type": contact.get("service_type", "our service"),
+                "system_prompt": prompt,
+            }
+            if profile:
+                if not metadata["system_prompt"] and profile.get("system_prompt"):
+                    metadata["system_prompt"] = profile["system_prompt"]
+                if profile.get("voice"):         metadata["voice_override"] = profile["voice"]
+                if profile.get("model"):         metadata["model_override"] = profile["model"]
+                if profile.get("enabled_tools"): metadata["tools_override"] = profile["enabled_tools"]
+
+            # ── Dispatch call ────────────────────────────────────────────────
+            try:
+                await lk.room.create_room(
+                    lk_api_module.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5)
+                )
+                await lk.agent_dispatch.create_dispatch(
+                    lk_api_module.CreateAgentDispatchRequest(
+                        agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
+                    )
+                )
+                logger.info("Batch %s [%d/%d] dispatched %s → %s", batch_id, i + 1, len(contacts), phone, room_name)
+            except Exception as dispatch_err:
+                logger.error("Batch %s dispatch error for %s: %s", batch_id, phone, dispatch_err)
+                await update_batch_contact_status(batch_id, i, "failed", None, str(dispatch_err))
+                continue
+
+            # ── Wait for room to appear (up to 10s) ─────────────────────────
+            room_started = False
+            for _ in range(10):
+                check = await get_batch_run(batch_id)
+                if not check or check.get("status") == "stopped":
+                    break
+                try:
+                    rooms_res = await lk.room.list_rooms(lk_api_module.ListRoomsRequest())
+                    if any(r.name == room_name for r in rooms_res.rooms):
+                        room_started = True
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+
+            # ── Wait for room to close (up to 5 min) ────────────────────────
+            if room_started:
+                checks = 0
+                max_checks = 150  # 2s × 150 = 5 minutes
+                while checks < max_checks:
+                    check = await get_batch_run(batch_id)
+                    if not check or check.get("status") == "stopped":
+                        break
+                    try:
+                        rooms_res = await lk.room.list_rooms(lk_api_module.ListRoomsRequest())
+                        if not any(r.name == room_name for r in rooms_res.rooms):
+                            break
+                    except Exception:
+                        pass
+                    checks += 1
+                    await asyncio.sleep(2)
+
+            # ── Resolve call outcome from call_logs ──────────────────────────
+            final_status = "completed"
+            final_outcome = None
+            if not contact.get("error_message"):
+                try:
+                    calls = await get_calls_by_phone(phone)
+                    if calls:
+                        latest = calls[0]
+                        log_ts = latest.get("timestamp", "")
+                        log_time = datetime.fromisoformat(log_ts.replace("Z", "+00:00"))
+                        diff_s = (datetime.now(_tz.utc) - log_time).total_seconds()
+                        if diff_s < 300:  # Fresh result within 5 min
+                            final_outcome = latest.get("outcome")
+                            if final_outcome in ("no_answer", "voicemail", "wrong_number"):
+                                final_status = "not_responded"
+                except Exception:
+                    pass
+
+            await update_batch_contact_status(batch_id, i, final_status, final_outcome, None)
+
+            # ── Delay between calls (skip after last) ────────────────────────
+            if i < len(contacts) - 1:
+                check = await get_batch_run(batch_id)
+                if not check or check.get("status") == "stopped":
+                    break
+                await asyncio.sleep(delay)
+
+        await lk.aclose()
+
+    except asyncio.CancelledError:
+        logger.info("Batch %s task was cancelled", batch_id)
+    except Exception as exc:
+        logger.error("Batch %s fatal error: %s", batch_id, exc)
+        await update_batch_run_status(batch_id, "failed")
+        return
+    finally:
+        await lk_session.close()
+        _active_batch_tasks.pop(batch_id, None)
+
+    # Only mark completed if the runner finished naturally (not stopped/failed)
+    final_batch = await get_batch_run(batch_id)
+    if final_batch and final_batch.get("status") == "running":
+        await update_batch_run_status(batch_id, "completed")
+    logger.info("Batch %s finished with status: %s", batch_id, final_batch.get("status") if final_batch else "unknown")
+
+
+@app.post("/api/batch")
+async def api_start_batch(req: BatchRequest):
+    """Start a new server-side batch. Returns batch_id immediately."""
+    if not req.contacts:
+        raise HTTPException(400, "contacts list cannot be empty")
+    if not req.name.strip():
+        raise HTTPException(400, "Batch name is required")
+
+    # Prevent two concurrent running batches
+    existing = await get_active_batch_run()
+    if existing:
+        raise HTTPException(409, f"A batch is already running (\"{ existing['name'] }\"). Stop it first before starting a new one.")
+
+    batch_id = await create_batch_run(
+        name=req.name.strip(),
+        contacts=req.contacts,
+        call_delay_seconds=req.call_delay_seconds,
+        agent_profile_id=req.agent_profile_id or None,
+    )
+    task = asyncio.create_task(_run_batch(batch_id))
+    _active_batch_tasks[batch_id] = task
+    logger.info("Batch started: %s — %d contacts", batch_id, len(req.contacts))
+    return {"status": "started", "batch_id": batch_id}
+
+
+@app.get("/api/batch/active")
+async def api_get_active_batch():
+    """Return the currently running batch (if any), for device reconnect on load."""
+    batch = await get_active_batch_run()
+    if not batch:
+        return {"active": False, "batch": None}
+    return {"active": True, "batch": batch}
+
+
+@app.get("/api/batch/history")
+async def api_get_batch_history():
+    """Return all batch runs ordered newest-first (for Batch Log tab)."""
+    return await get_all_batch_runs()
+
+
+@app.get("/api/batch/{batch_id}")
+async def api_get_batch(batch_id: str):
+    """Return full details of a single batch run including per-contact statuses."""
+    batch = await get_batch_run(batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    return batch
+
+
+@app.post("/api/batch/{batch_id}/stop")
+async def api_stop_batch(batch_id: str):
+    """Stop a running batch from any device."""
+    batch = await get_batch_run(batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    if batch.get("status") != "running":
+        raise HTTPException(400, f"Batch is not running (current status: {batch.get('status')})")
+    # Mark as stopped in DB — the runner loop checks this flag each iteration
+    await update_batch_run_status(batch_id, "stopped")
+    # Also cancel the asyncio task if it lives in this process
+    task = _active_batch_tasks.pop(batch_id, None)
+    if task and not task.done():
+        task.cancel()
+    return {"status": "stopped", "batch_id": batch_id}

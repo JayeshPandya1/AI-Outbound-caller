@@ -809,3 +809,103 @@ async def ensure_default_user() -> None:
             print(f"Created default admin user: {admin_id}")
     except Exception as exc:
         print(f"WARNING: ensure_default_user failed: {exc}. Run Supabase script.")
+
+
+# ── Batch Runs ─────────────────────────────────────────────────────────────────
+
+import json as _json_mod
+
+async def create_batch_run(
+    name: str, contacts: list, call_delay_seconds: int = 3,
+    agent_profile_id: Optional[str] = None,
+) -> str:
+    """Create a new batch run record in Supabase and return its UUID."""
+    db = await _adb()
+    batch_id = str(uuid.uuid4())
+    contacts_with_status = [
+        {
+            "phone": c.get("phone", ""),
+            "lead_name": c.get("lead_name", ""),
+            "business_name": c.get("business_name", ""),
+            "service_type": c.get("service_type", ""),
+            "status": "pending",
+            "outcome": None,
+            "error_message": None,
+        }
+        for c in contacts
+    ]
+    row: dict = {
+        "id": batch_id,
+        "name": name,
+        "status": "running",
+        "contacts_json": _json_mod.dumps(contacts_with_status),
+        "total_contacts": len(contacts),
+        "completed_count": 0,
+        "current_index": 0,
+        "call_delay_seconds": call_delay_seconds,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if agent_profile_id:
+        row["agent_profile_id"] = agent_profile_id
+    await db.table("batch_runs").insert(row).execute()
+    return batch_id
+
+
+async def get_batch_run(batch_id: str) -> Optional[dict]:
+    """Fetch a single batch run by ID."""
+    db = await _adb()
+    result = await db.table("batch_runs").select("*").eq("id", batch_id).maybe_single().execute()
+    return result.data if result else None
+
+
+async def get_active_batch_run() -> Optional[dict]:
+    """Return the currently running batch (if any)."""
+    db = await _adb()
+    result = await db.table("batch_runs").select("*").eq("status", "running").order("created_at", desc=True).limit(1).execute()
+    return result.data[0] if result.data else None
+
+
+async def get_all_batch_runs() -> list:
+    """Return all batch runs ordered newest-first (for Batch Log tab)."""
+    db = await _adb()
+    result = await (
+        db.table("batch_runs")
+        .select("id, name, status, total_contacts, completed_count, current_index, call_delay_seconds, agent_profile_id, created_at, completed_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+async def update_batch_contact_status(
+    batch_id: str, index: int, status: str,
+    outcome: Optional[str], error: Optional[str]
+) -> None:
+    """Update a single contact's status within the batch and increment the completed counter."""
+    db = await _adb()
+    result = await db.table("batch_runs").select("contacts_json, completed_count").eq("id", batch_id).maybe_single().execute()
+    if not result or not result.data:
+        return
+    contacts = _json_mod.loads(result.data.get("contacts_json") or "[]")
+    if index < len(contacts):
+        contacts[index]["status"] = status
+        contacts[index]["outcome"] = outcome
+        contacts[index]["error_message"] = error
+    # Only count terminal statuses toward completed_count
+    completed_count = result.data.get("completed_count", 0)
+    if status in ("completed", "not_responded", "failed"):
+        completed_count += 1
+    await db.table("batch_runs").update({
+        "contacts_json": _json_mod.dumps(contacts),
+        "completed_count": completed_count,
+        "current_index": index,
+    }).eq("id", batch_id).execute()
+
+
+async def update_batch_run_status(batch_id: str, status: str) -> None:
+    """Set the top-level status of a batch run (completed / stopped / failed)."""
+    db = await _adb()
+    updates: dict = {"status": status}
+    if status in ("completed", "stopped", "failed"):
+        updates["completed_at"] = datetime.now(timezone.utc).isoformat()
+    await db.table("batch_runs").update(updates).eq("id", batch_id).execute()

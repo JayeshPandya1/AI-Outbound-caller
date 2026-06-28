@@ -114,3 +114,22 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 );
 ALTER TABLE user_sessions DISABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(session_token);
+
+-- ── Batch Runs (Server-Side Batch Orchestration) ──────────────────────────────
+-- Stores every batch ever run for device-independent control and permanent history.
+CREATE TABLE IF NOT EXISTS batch_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',        -- running | completed | stopped | failed
+    contacts_json TEXT NOT NULL DEFAULT '[]',      -- JSON array with per-contact status
+    total_contacts INTEGER DEFAULT 0,
+    completed_count INTEGER DEFAULT 0,
+    current_index INTEGER DEFAULT 0,
+    call_delay_seconds INTEGER DEFAULT 3,
+    agent_profile_id TEXT,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    completed_at TIMESTAMPTZ
+);
+ALTER TABLE batch_runs DISABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_batch_runs_status ON batch_runs(status);
+CREATE INDEX IF NOT EXISTS idx_batch_runs_created ON batch_runs(created_at DESC);
