@@ -715,49 +715,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         f"total_to_ready={t_session_ready - call_start_time:.2f}s"
     ))
 
-    # ── Optional S3 recording (Asynchronous background task) ─────────────────
-    async def start_recording_background():
-        # PERF FIX #5: Parallelize all 5 S3 settings lookups
-        _s3_results = await asyncio.gather(
-            get_setting("S3_ACCESS_KEY_ID"), get_setting("S3_SECRET_ACCESS_KEY"),
-            get_setting("S3_BUCKET"), get_setting("S3_ENDPOINT_URL"), get_setting("S3_REGION"),
-        )
-        _aws_key    = _s3_results[0] or os.getenv("S3_ACCESS_KEY_ID", "")
-        _aws_secret = _s3_results[1] or os.getenv("S3_SECRET_ACCESS_KEY", "")
-        _aws_bucket = _s3_results[2] or os.getenv("S3_BUCKET", "")
-        _s3_endpoint = _s3_results[3] or os.getenv("S3_ENDPOINT_URL", "")
-        _s3_region  = _s3_results[4] or os.getenv("S3_REGION", "ap-northeast-1")
-        if _aws_key and _aws_secret and _aws_bucket:
-            try:
-                _recording_path = f"recordings/{ctx.room.name}.ogg"
-                _egress_req = api.RoomCompositeEgressRequest(
-                    room_name=ctx.room.name, audio_only=True,
-                    file=api.EncodedFileOutput(
-                        file_type=api.EncodedFileType.OGG, filepath=_recording_path,
-                        s3=api.S3Upload(access_key=_aws_key, secret=_aws_secret,
-                                        bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint,
-                                        force_path_style=True),
-                    ),
-                )
-                _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
-                _s3_ep = _s3_endpoint.rstrip("/")
-                _supabase_url = os.getenv("SUPABASE_URL")
-                if _supabase_url:
-                    _supabase_url = _supabase_url.rstrip("/")
-                    tool_ctx.recording_url = f"{_supabase_url}/storage/v1/object/public/{_aws_bucket}/{_recording_path}"
-                elif _s3_ep and "supabase.co" in _s3_ep:
-                    _base = _s3_ep.split("/storage/v1/s3")[0]
-                    tool_ctx.recording_url = f"{_base}/storage/v1/object/public/{_aws_bucket}/{_recording_path}"
-                elif _s3_ep:
-                    tool_ctx.recording_url = f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
-                else:
-                    tool_ctx.recording_url = f"https://{_aws_bucket}.s3.amazonaws.com/{_recording_path}"
-                await _log("info", f"Recording started: egress={_egress.egress_id}")
-            except Exception as _exc:
-                await _log("warning", f"Recording start failed (non-fatal): {_exc}")
-
-    if phone_number:
-        asyncio.create_task(start_recording_background())
 
     # ── Keep session alive until SIP participant actually leaves ─────────────
     # Without this block, the entrypoint returns and the process spins down.
