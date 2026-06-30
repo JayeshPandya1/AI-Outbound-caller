@@ -432,6 +432,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
     session = _build_session(tools=active_tools, system_prompt=system_prompt, gemini_model=gemini_model, gemini_voice=gemini_voice)
+    tool_ctx.session = session  # Store session reference in tools
     if session.input.audio is not None:
         session.input.audio = GateFilteredAudioInput(session.input.audio, threshold=silence_threshold)
         logger.info(f"RMS noise gate filter successfully injected into session input audio stream (threshold={silence_threshold}) BEFORE session start.")
@@ -481,6 +482,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 vad_to_audio = now - _user_speech_stop_time
                 logger.info(f"[LATENCY AUDIT] User speech stopped to first agent audio: {vad_to_audio * 1000:.0f}ms")
                 _user_speech_stop_time = 0.0
+        
+        # If the call was marked inactive by the end_call tool, and the agent has finished speaking/thinking
+        if not getattr(tool_ctx, "call_active", True) and new_state in ("listening", "idle"):
+            logger.info("Agent finished final goodbye — disconnecting room cleanly")
+            asyncio.create_task(ctx.room.disconnect())
 
     from livekit.agents import room_io as _room_io
     _room_options = _room_io.RoomOptions(

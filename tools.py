@@ -37,6 +37,7 @@ class AppointmentTools(llm.ToolContext):
         self.call_active = True
         self.call_db_id = call_db_id
         self.cached_history = cached_history or "No history found."
+        self.session = None  # Saved reference to AgentSession
         super().__init__(tools=[])
 
     def build_tool_list(self, enabled: list) -> list:
@@ -117,12 +118,8 @@ class AppointmentTools(llm.ToolContext):
                 await clear_contact_cache(self.phone_number)
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
-        try:
-            await self.ctx.room.disconnect()
-        except Exception:
-            pass
         logger.info(f"[LATENCY AUDIT] end_call execution took {time.time() - t0:.2f}s")
-        return "Call ended."
+        return "Outcome logged. Tell the customer goodbye."
 
     @llm.function_tool
     async def transfer_to_human(self, reason: str) -> str:
