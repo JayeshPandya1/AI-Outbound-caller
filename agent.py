@@ -357,7 +357,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     lines.append(f"Call history:")
                     for c in calls[:5]:
                         ts = (c.get("timestamp") or "")[:16]
-                        lines.append(f"  • {ts} — {c.get('outcome','?')}: {c.get('reason','')}")
+                        lines.append(f"  • {ts} — {c.get('outcome','?')}")
                 if appointments:
                     lines.append(f"Appointments:")
                     for a in appointments[:3]:
