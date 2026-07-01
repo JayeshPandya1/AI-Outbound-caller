@@ -1224,8 +1224,13 @@
       h.push(`<div class="live-config-chip">Prompt: <span class="${pt.is_custom ? '' : 'text2'}">${pt.is_custom ? 'Custom' : 'Default'}</span></div>`);
       try {
         const v = await api('/api/version-check');
-        if (v && v.versions && v.versions['livekit-agents']) {
-          h.push(`<div class="live-config-chip">LiveKit Agent: <span>v${v.versions['livekit-agents']}</span></div>`);
+        if (v && v.versions) {
+          if (v.versions['livekit']) {
+            h.push(`<div class="live-config-chip">LiveKit: <span>v${v.versions['livekit']}</span></div>`);
+          }
+          if (v.versions['livekit-agents']) {
+            h.push(`<div class="live-config-chip">LiveKit Agent: <span>v${v.versions['livekit-agents']}</span></div>`);
+          }
         }
       } catch (e) {
         console.warn("Failed to load LiveKit version in chip:", e);
