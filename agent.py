@@ -314,6 +314,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
 
     call_db_id = None
     history_task = None
+    _disconnect_event = asyncio.Event()
     if phone_number:
         try:
             call_db_id = await log_call(
@@ -486,7 +487,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         # If the call was marked inactive by the end_call tool, and the agent has finished speaking/thinking
         if not getattr(tool_ctx, "call_active", True) and new_state in ("listening", "idle"):
             logger.info("Agent finished final goodbye — disconnecting room cleanly")
-            asyncio.create_task(ctx.room.disconnect())
+            _disconnect_event.set()
 
     from livekit.agents import room_io as _room_io
     _room_options = _room_io.RoomOptions(
@@ -728,7 +729,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # We watch participant_disconnected for the specific SIP identity.
     if phone_number:
         _sip_identity = f"sip_{phone_number}"
-        _disconnect_event = asyncio.Event()
+
 
         def _on_participant_disconnected(participant: rtc.RemoteParticipant):
             if participant.identity == _sip_identity:
