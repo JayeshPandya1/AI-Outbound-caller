@@ -485,10 +485,12 @@ async def api_version_check():
     
     status = "ok"
     warnings = []
+    versions = {}
     
     for pkg, conf_ver in CONFIRMED_VERSIONS.items():
         try:
             installed = importlib.metadata.version(pkg)
+            versions[pkg] = installed
             if installed != conf_ver:
                 warnings.append({
                     "package": pkg,
@@ -498,8 +500,9 @@ async def api_version_check():
                 status = "warning"
         except Exception as e:
             logger.warning(f"Could not check version for {pkg}: {e}")
+            versions[pkg] = "unknown"
             
-    return {"status": status, "warnings": warnings}
+    return {"status": status, "warnings": warnings, "versions": versions}
 
 
 

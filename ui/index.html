@@ -1222,6 +1222,14 @@
       h.push(`<div class="live-config-chip">Voice: <span>${s.GEMINI_TTS_VOICE?.value || 'Aoede'}</span></div>`);
       const pt = await api('/api/prompt');
       h.push(`<div class="live-config-chip">Prompt: <span class="${pt.is_custom ? '' : 'text2'}">${pt.is_custom ? 'Custom' : 'Default'}</span></div>`);
+      try {
+        const v = await api('/api/version-check');
+        if (v && v.versions && v.versions['livekit-agents']) {
+          h.push(`<div class="live-config-chip">LiveKit Agent: <span>v${v.versions['livekit-agents']}</span></div>`);
+        }
+      } catch (e) {
+        console.warn("Failed to load LiveKit version in chip:", e);
+      }
       $('live-config-chips').innerHTML = h.join('');
     }
     function renderCharts(d) {
