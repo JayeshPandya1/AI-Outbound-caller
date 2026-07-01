@@ -117,7 +117,7 @@ class AppointmentTools(llm.ToolContext):
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
         logger.info(f"[LATENCY AUDIT] end_call execution took {time.time() - t0:.2f}s")
-        return "Outcome logged. Tell the customer goodbye."
+        return "Outcome logged. Say a polite goodbye statement now, thank the user for their time in their preferred language, and stop. Do not speak about database outcomes, statuses, or parameters (e.g. 'not_interested' or 'booked')."
 
     @llm.function_tool
     async def transfer_to_human(self, reason: str) -> str:
