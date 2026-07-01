@@ -429,7 +429,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # ── Build and start AI session in the background ──
     t_session_init = time.time()
     await _log("info", f"[LATENCY AUDIT] Building AI session (model={gemini_model}) at {t_session_init - call_start_time:.2f}s")
-    active_tools = tool_ctx.build_tool_list(enabled_tools)
+    active_tools = tool_ctx.build_tool_list(["book_appointment", "end_call", "lookup_contact"])
     await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
     session = _build_session(tools=active_tools, system_prompt=system_prompt, gemini_model=gemini_model, gemini_voice=gemini_voice)
     tool_ctx.session = session  # Store session reference in tools
@@ -491,6 +491,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     from livekit.agents import room_io as _room_io
     _room_options = _room_io.RoomOptions(
         close_on_disconnect=False,
+        delete_room_on_close=True,
         participant_identity=_sip_identity,
     )
     _session_kwargs = dict(

@@ -47,8 +47,6 @@ class AppointmentTools(llm.ToolContext):
             self.transfer_to_human, self.send_sms_confirmation, self.lookup_contact,
             self.remember_details, self.book_calcom, self.cancel_calcom,
         ]
-        if not enabled:
-            return all_methods
         name_map = {m.__name__: m for m in all_methods}
         return [name_map[n] for n in enabled if n in name_map]
 
